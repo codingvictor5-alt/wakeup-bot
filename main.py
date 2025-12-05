@@ -291,9 +291,10 @@ async def main():
 
 if __name__ == "__main__":
     import nest_asyncio
-    nest_asyncio.apply()
-
     import asyncio
-    asyncio.get_event_loop().create_task(main())
-    asyncio.get_event_loop().run_forever()
+
+    nest_asyncio.apply()  # allows nested event loops (needed for Render)
+    loop = asyncio.get_event_loop()
+    loop.create_task(main())  # schedule your async main
+    loop.run_forever()        # keep the bot running
 
