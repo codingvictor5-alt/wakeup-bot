@@ -31,7 +31,7 @@ load_dotenv()  # This reads your .env file
 
 # ---------- CONFIG ----------
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-GROUP_CHAT_ID_RAW = os.getenv("GROUP_ID")
+GROUP_CHAT_ID_RAW = os.getenv("GROUP_CHAT_ID")
 if not BOT_TOKEN:
     raise SystemExit("Error: BOT_TOKEN env var required.")
 if not GROUP_CHAT_ID_RAW:
