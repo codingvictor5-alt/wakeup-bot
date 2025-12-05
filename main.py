@@ -3,6 +3,10 @@
 Group-only Wakeup Bot (Render-ready, python-telegram-bot v20+)
 Requires: python-telegram-bot>=20.0, aiosqlite
 """
+from dotenv import load_dotenv
+import os
+
+
 
 import os
 import asyncio
@@ -23,9 +27,11 @@ from telegram.ext import (
     filters
 )
 
+load_dotenv()  # This reads your .env file
+
 # ---------- CONFIG ----------
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
-GROUP_CHAT_ID_RAW = os.environ.get("GROUP_ID", "").strip()
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+GROUP_CHAT_ID_RAW = os.getenv("GROUP_CHAT_ID")
 if not BOT_TOKEN:
     raise SystemExit("Error: BOT_TOKEN env var required.")
 if not GROUP_CHAT_ID_RAW:
