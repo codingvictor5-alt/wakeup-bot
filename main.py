@@ -148,9 +148,11 @@ async def get_records_between(db, chat_id:int, start_date:str, end_date:str):
 
 # ---------------- Handlers -----------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_chat.type != "group":
+    if update.effective_chat.id != int(os.getenv("GROUP_CHAT_ID")):
         await update.message.reply_text("This bot works only in the configured group.")
         return
+        
+
     await update.message.reply_text(
         "👋 Wakeup Bot ready!\nCommands:\ncheckin, /reset, /setstreak <n>, /mystats, /leaderboard"
     )
