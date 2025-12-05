@@ -12,7 +12,8 @@ import statistics
 import aiosqlite
 from typing import Optional, List, Tuple
 
-from telegram import Update, ParseMode
+from telegram import Update  # Update object
+from telegram.constants import ParseMode  # <-- moved here in v20+
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -20,6 +21,7 @@ from telegram.ext import (
     filters,
     ContextTypes,
 )
+
 
 # ---------- CONFIG via ENV ----------
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
