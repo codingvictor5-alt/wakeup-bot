@@ -290,12 +290,10 @@ async def main():
     await app.run_polling()
 
 if __name__ == "__main__":
-    import logging
-    logging.basicConfig(level=logging.INFO)
+    import nest_asyncio
+    nest_asyncio.apply()
+
     import asyncio
-    import sys
+    asyncio.get_event_loop().create_task(main())
+    asyncio.get_event_loop().run_forever()
 
-    import telegram
-    from telegram.ext import ApplicationBuilder
-
-    main()  # just call it, do NOT wrap in asyncio.run()
