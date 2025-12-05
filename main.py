@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Group-only Wakeup Bot
-Deploy-ready for GitHub + Render
+Group-only Wakeup Bot (Render-ready, python-telegram-bot v20+)
+Requires: python-telegram-bot>=20.0, aiosqlite
 """
 
 import os
@@ -11,43 +11,38 @@ from zoneinfo import ZoneInfo
 import statistics
 import aiosqlite
 from typing import Optional, List, Tuple
+from collections import defaultdict
 
-from telegram import Update  # Update object
-from telegram.constants import ParseMode  # <-- moved here in v20+
+from telegram import Update
+from telegram.constants import ParseMode
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
     MessageHandler,
-    filters,
     ContextTypes,
+    filters
 )
 
-
-# ---------- CONFIG via ENV ----------
+# ---------- CONFIG ----------
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
 GROUP_CHAT_ID_RAW = os.environ.get("GROUP_ID", "").strip()
-
 if not BOT_TOKEN:
-    raise SystemExit("Error: BOT_TOKEN env var missing.")
+    raise SystemExit("Error: BOT_TOKEN env var required.")
 if not GROUP_CHAT_ID_RAW:
-    raise SystemExit("Error: GROUP_ID env var missing.")
-
+    raise SystemExit("Error: GROUP_ID env var required.")
 try:
     GROUP_CHAT_ID = int(GROUP_CHAT_ID_RAW)
 except:
-    raise SystemExit("GROUP_ID must be -100... integer")
+    raise SystemExit("Error: GROUP_ID must be integer, e.g., -1001234567890")
 
 DB_FILE = os.environ.get("DB_FILE", "wakeup_bot.db")
 TZ = ZoneInfo("Asia/Kolkata")
-
 LEADERBOARD_HOUR = int(os.environ.get("LEADERBOARD_HOUR", 5))
 BEDTIME_HOUR = int(os.environ.get("BEDTIME_HOUR", 21))
-WEEKLY_SUMMARY_DAY = int(os.environ.get("WEEKLY_SUMMARY_DAY", 6))  # Sunday
+WEEKLY_SUMMARY_DAY = int(os.environ.get("WEEKLY_SUMMARY_DAY", 6))
 WEEKLY_SUMMARY_HOUR = int(os.environ.get("WEEKLY_SUMMARY_HOUR", 6))
 LEADERBOARD_TOP = int(os.environ.get("LEADERBOARD_TOP", 5))
-
 BADGE_THRESHOLDS = [3, 7, 21]  # Bronze, Silver, Gold
-# ------------------------------------
 
 CREATE_TABLES_SQL = """
 CREATE TABLE IF NOT EXISTS users (
@@ -66,9 +61,10 @@ CREATE TABLE IF NOT EXISTS records (
     date TEXT,
     time TEXT
 );
+CREATE INDEX IF NOT EXISTS idx_records_chat_date ON records(chat_id, date);
 """
 
-# ---------------- Utilities ----------------
+# ----------------- Utilities -----------------
 def parse_time_string(s: str) -> Optional[time]:
     s = s.replace(".", ":").strip()
     for fmt in ("%H:%M", "%I:%M", "%H"):
@@ -79,9 +75,11 @@ def parse_time_string(s: str) -> Optional[time]:
             continue
     try:
         h = int(s)
-        return time(h, 0)
+        if 0 <= h <= 23:
+            return time(h, 0)
     except:
-        return None
+        pass
+    return None
 
 def valid_wakeup(t: time) -> bool:
     return time(4, 0) <= t <= time(7, 0)
@@ -89,20 +87,20 @@ def valid_wakeup(t: time) -> bool:
 def average_time_str(times: List[str]) -> str:
     if not times:
         return "N/A"
-    mins = [int(t.split(":")[0]) * 60 + int(t.split(":")[1]) for t in times]
+    mins = []
+    for t in times:
+        h, m = map(int, t.split(":"))
+        mins.append(h * 60 + m)
     avg = int(statistics.mean(mins))
     return f"{avg//60:02d}:{avg%60:02d}"
 
 def badge_for_streak(streak: int) -> Optional[str]:
-    if streak >= 21:
-        return "Gold"
-    if streak >= 7:
-        return "Silver"
-    if streak >= 3:
-        return "Bronze"
+    if streak >= BADGE_THRESHOLDS[2]: return "Gold"
+    if streak >= BADGE_THRESHOLDS[1]: return "Silver"
+    if streak >= BADGE_THRESHOLDS[0]: return "Bronze"
     return None
 
-# ---------------- DB helpers -----------------
+# ---------------- DB -----------------
 async def init_db():
     async with aiosqlite.connect(DB_FILE) as db:
         await db.executescript(CREATE_TABLES_SQL)
@@ -110,296 +108,186 @@ async def init_db():
 
 async def ensure_user_row(db, chat_id: int, user_id: int):
     await db.execute(
-        "INSERT OR IGNORE INTO users(chat_id, user_id, streak, last_checkin, last_time, badge) "
-        "VALUES (?, ?, 0, '', '', '')",
-        (chat_id, user_id),
+        "INSERT OR IGNORE INTO users(chat_id, user_id, streak, last_checkin, last_time, badge) VALUES (?, ?, 0, '', '', '')",
+        (chat_id, user_id)
     )
 
 async def get_user(db, chat_id: int, user_id: int):
-    cur = await db.execute(
-        "SELECT streak, last_checkin, last_time, badge FROM users WHERE chat_id=? AND user_id=?",
-        (chat_id, user_id),
-    )
+    cur = await db.execute("SELECT streak, last_checkin, last_time, badge FROM users WHERE chat_id=? AND user_id=?", (chat_id, user_id))
     return await cur.fetchone()
 
-async def set_user_fields(db, chat_id: int, user_id: int, **fields):
-    parts = []
-    vals = []
-    for k, v in fields.items():
-        if v is not None:
-            parts.append(f"{k}=?")
-            vals.append(v)
-    if not parts:
-        return
+async def set_user_fields(db, chat_id:int, user_id:int, streak:int=None, last_checkin:str=None, last_time:str=None, badge:Optional[str]=None):
+    parts, vals = [], []
+    if streak is not None: parts.append("streak=?"); vals.append(streak)
+    if last_checkin is not None: parts.append("last_checkin=?"); vals.append(last_checkin)
+    if last_time is not None: parts.append("last_time=?"); vals.append(last_time)
+    if badge is not None: parts.append("badge=?"); vals.append(badge)
+    if not parts: return
     vals.extend([chat_id, user_id])
     await db.execute(f"UPDATE users SET {', '.join(parts)} WHERE chat_id=? AND user_id=?", vals)
 
-async def add_record(db, chat_id: int, user_id: int, iso_date: str, hhmm: str):
-    await db.execute(
-        "INSERT INTO records(chat_id, user_id, date, time) VALUES (?, ?, ?, ?)",
-        (chat_id, user_id, iso_date, hhmm),
-    )
+async def add_record(db, chat_id:int, user_id:int, iso_date:str, hhmm:str):
+    await db.execute("INSERT INTO records(chat_id, user_id, date, time) VALUES (?, ?, ?, ?)", (chat_id, user_id, iso_date, hhmm))
 
-async def user_checked_today(db, chat_id: int, user_id: int, iso_date: str):
-    cur = await db.execute(
-        "SELECT 1 FROM records WHERE chat_id=? AND user_id=? AND date=? LIMIT 1",
-        (chat_id, user_id, iso_date),
-    )
+async def user_checked_today(db, chat_id:int, user_id:int, iso_date:str) -> bool:
+    cur = await db.execute("SELECT 1 FROM records WHERE chat_id=? AND user_id=? AND date=? LIMIT 1", (chat_id, user_id, iso_date))
     return await cur.fetchone() is not None
 
-async def get_user_records(db, chat_id: int, user_id: int):
-    cur = await db.execute(
-        "SELECT time FROM records WHERE chat_id=? AND user_id=? ORDER BY date",
-        (chat_id, user_id),
-    )
+async def get_user_records(db, chat_id:int, user_id:int):
+    cur = await db.execute("SELECT time FROM records WHERE chat_id=? AND user_id=? ORDER BY date", (chat_id, user_id))
     rows = await cur.fetchall()
     return [r[0] for r in rows]
 
-async def get_top_streaks(db, chat_id: int, top: int):
-    cur = await db.execute(
-        "SELECT user_id, streak, badge FROM users WHERE chat_id=? ORDER BY streak DESC LIMIT ?",
-        (chat_id, top),
-    )
+async def get_top_streaks(db, chat_id:int, top:int=5) -> List[Tuple[int,int,str]]:
+    cur = await db.execute("SELECT user_id, streak, badge FROM users WHERE chat_id=? ORDER BY streak DESC LIMIT ?", (chat_id, top))
     return await cur.fetchall()
 
-async def get_records_between(db, chat_id: int, start_date: str, end_date: str):
-    cur = await db.execute(
-        "SELECT user_id, date, time FROM records WHERE chat_id=? AND date BETWEEN ? AND ?",
-        (chat_id, start_date, end_date),
-    )
+async def get_records_between(db, chat_id:int, start_date:str, end_date:str):
+    cur = await db.execute("SELECT user_id, date, time FROM records WHERE chat_id=? AND date BETWEEN ? AND ?", (chat_id, start_date, end_date))
     return await cur.fetchall()
 
-# --------------- Bot Handlers -----------------
+# ---------------- Handlers -----------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat.type != "group":
+        await update.message.reply_text("This bot works only in the configured group.")
+        return
     await update.message.reply_text(
-        "👋 Wakeup Group Bot Ready!\n\n"
-        "Commands:\n"
-        "• checkin → mark using current time\n"
-        "• checkin 5:30 → custom wake time\n"
-        "/reset — reset your streak\n"
-        "/setstreak N — manually set streak\n"
-        "/mystats — your stats\n"
-        "/leaderboard — show leaderboard\n\n"
-        "Daily: 5 AM leaderboard, 9 PM bedtime reminder.\n"
+        "👋 Wakeup Bot ready!\nCommands:\ncheckin, /reset, /setstreak <n>, /mystats, /leaderboard"
     )
 
-async def reset_cmd(update, context):
+async def reset_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat.id != GROUP_CHAT_ID: return
     user = update.effective_user
     async with aiosqlite.connect(DB_FILE) as db:
         await ensure_user_row(db, GROUP_CHAT_ID, user.id)
-        await set_user_fields(db, GROUP_CHAT_ID, user.id,
-                              streak=0, last_checkin=date.today().isoformat(),
-                              last_time="reset", badge="")
+        await set_user_fields(db, GROUP_CHAT_ID, user.id, streak=0, last_checkin=date.today().isoformat(), last_time="reset", badge="")
         await db.commit()
-    await update.message.reply_text(
-        f"🔁 {user.mention_html()} — streak reset.", parse_mode="HTML"
-    )
+    await update.message.reply_text(f"🔁 {user.mention_html()} streak reset to 0.", parse_mode=ParseMode.HTML)
 
-async def setstreak_cmd(update, context):
+async def setstreak_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat.id != GROUP_CHAT_ID: return
     user = update.effective_user
     args = context.args
     if len(args) != 1 or not args[0].isdigit():
-        return await update.message.reply_text("Usage: /setstreak 8")
-
+        await update.message.reply_text("Usage: /setstreak 8")
+        return
     new = int(args[0])
     badge = badge_for_streak(new) or ""
     async with aiosqlite.connect(DB_FILE) as db:
         await ensure_user_row(db, GROUP_CHAT_ID, user.id)
         await set_user_fields(db, GROUP_CHAT_ID, user.id, streak=new, badge=badge)
         await db.commit()
+    await update.message.reply_text(f"✅ {user.mention_html()} streak set to {new}. Badge: {badge or 'None'}.", parse_mode=ParseMode.HTML)
 
-    await update.message.reply_text(
-        f"✅ Streak set to {new}. Badge: {badge or 'None'}.",
-        parse_mode="HTML",
-    )
-
-async def mystats_cmd(update, context):
+async def mystats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat.id != GROUP_CHAT_ID: return
     user = update.effective_user
     async with aiosqlite.connect(DB_FILE) as db:
         await ensure_user_row(db, GROUP_CHAT_ID, user.id)
         row = await get_user(db, GROUP_CHAT_ID, user.id)
         recs = await get_user_records(db, GROUP_CHAT_ID, user.id)
-
+    if not row:
+        await update.message.reply_text("No stats found. Do your first checkin!")
+        return
     streak, last_checkin, last_time, badge = row
     avg = average_time_str(recs)
-
     await update.message.reply_text(
-        f"📊 Stats:\n"
-        f"• Streak: {streak}\n"
-        f"• Last check-in: {last_checkin}\n"
-        f"• Last wake: {last_time}\n"
-        f"• Avg wake: {avg}\n"
-        f"• Badge: {badge or 'None'}",
-        parse_mode="HTML",
+        f"📊 {user.mention_html()}'s stats:\n• Current streak: <b>{streak}</b>\n• Last check-in: <b>{last_checkin}</b>\n• Last wake-up: <b>{last_time}</b>\n• Avg wake-up: <b>{avg}</b>\n• Badge: <b>{badge or 'None'}</b>",
+        parse_mode=ParseMode.HTML
     )
 
-async def leaderboard_cmd(update, context):
-    await send_leaderboard(context)
-
-async def checkin_handler(update, context):
-    msg = update.message
+# ---------------- Checkin -----------------
+async def checkin_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = update.effective_message
+    if msg.chat.id != GROUP_CHAT_ID: return
     user = update.effective_user
-    text = msg.text.strip()
-    parts = text.split()
-    today = datetime.now(TZ).date().isoformat()
+    parts = msg.text.strip().split()
+    today_iso = datetime.now(TZ).date().isoformat()
 
     async with aiosqlite.connect(DB_FILE) as db:
         await ensure_user_row(db, GROUP_CHAT_ID, user.id)
-        if await user_checked_today(db, GROUP_CHAT_ID, user.id, today):
-            return await msg.reply_text("⛔ Already checked in today.")
-
-        if len(parts) >= 2:
-            t = parse_time_string(parts[1])
-            if not t:
-                return await msg.reply_text("Invalid time. Use: checkin 5:30")
-        else:
-            t = datetime.now(TZ).time()
-
+        if await user_checked_today(db, GROUP_CHAT_ID, user.id, today_iso):
+            await msg.reply_text(f"⛔ {user.mention_html()} already checked in today.", parse_mode=ParseMode.HTML)
+            return
+        t = parse_time_string(parts[1]) if len(parts) > 1 else datetime.now(TZ).time()
+        if not t:
+            await msg.reply_text("⛔ Invalid time format.", parse_mode=ParseMode.HTML)
+            return
         hhmm = t.strftime("%H:%M")
-
         if not valid_wakeup(t):
-            await add_record(db, GROUP_CHAT_ID, user.id, today, hhmm)
-            await set_user_fields(db, GROUP_CHAT_ID, user.id,
-                                  streak=0, last_checkin=today,
-                                  last_time=hhmm, badge="")
+            await add_record(db, GROUP_CHAT_ID, user.id, today_iso, hhmm)
+            await set_user_fields(db, GROUP_CHAT_ID, user.id, streak=0, last_checkin=today_iso, last_time=hhmm, badge="")
             await db.commit()
-            return await msg.reply_text(
-                f"⚠️ Wake {hhmm} outside 4–7 AM. Streak reset."
-            )
-
+            await msg.reply_text(f"⚠️ {user.mention_html()} — wake-up {hhmm} outside 04:00–07:00. Streak reset to 0.", parse_mode=ParseMode.HTML)
+            return
         row = await get_user(db, GROUP_CHAT_ID, user.id)
-        prev = row[0]
-        new = prev + 1
-        b = badge_for_streak(new) or ""
-
-        await add_record(db, GROUP_CHAT_ID, user.id, today, hhmm)
-        await set_user_fields(db, GROUP_CHAT_ID, user.id,
-                              streak=new, last_checkin=today,
-                              last_time=hhmm, badge=b)
+        prev_streak = row[0] if row else 0
+        new_streak = prev_streak + 1
+        badge = badge_for_streak(new_streak) or ""
+        await add_record(db, GROUP_CHAT_ID, user.id, today_iso, hhmm)
+        await set_user_fields(db, GROUP_CHAT_ID, user.id, streak=new_streak, last_checkin=today_iso, last_time=hhmm, badge=badge)
         await db.commit()
+        await msg.reply_text(f"🔥 {user.mention_html()} — streak now <b>{new_streak}</b>, wake-up: <b>{hhmm}</b>, badge: <b>{badge or 'None'}</b>", parse_mode=ParseMode.HTML)
 
-        await msg.reply_text(
-            f"🔥 Streak {new}! Wake: {hhmm}. Badge: {b or 'None'}"
-        )
-
-# ------------ Scheduled Jobs -------------
-async def send_leaderboard(context):
+# ---------------- Scheduler Tasks -----------------
+async def send_leaderboard(context: ContextTypes.DEFAULT_TYPE):
     async with aiosqlite.connect(DB_FILE) as db:
         rows = await get_top_streaks(db, GROUP_CHAT_ID, LEADERBOARD_TOP)
-
     if not rows:
-        return await context.bot.send_message(
-            GROUP_CHAT_ID, "No leaderboard yet."
-        )
-
+        await context.bot.send_message(GROUP_CHAT_ID, "🏆 No leaderboard data yet.")
+        return
     lines = []
-    rank = 1
-    for uid, streak, badge in rows:
-        try:
-            member = await context.bot.get_chat_member(GROUP_CHAT_ID, uid)
-            name = member.user.mention_html()
-        except:
-            name = str(uid)
+    for i, (uid, streak, badge) in enumerate(rows, 1):
+        try: mention = (await context.bot.get_chat_member(GROUP_CHAT_ID, uid)).user.mention_html()
+        except: mention = str(uid)
+        b = f" ({badge})" if badge else ""
+        lines.append(f"{i}. {mention} — <b>{streak}</b> days{b}")
+    text = "🏆 <b>Daily Leaderboard</b>\n\n" + "\n".join(lines)
+    await context.bot.send_message(GROUP_CHAT_ID, text, parse_mode=ParseMode.HTML)
 
-        lines.append(
-            f"{rank}. {name} — {streak} days ({badge or 'None'})"
-        )
-        rank += 1
+async def send_bedtime_reminder(context: ContextTypes.DEFAULT_TYPE):
+    await context.bot.send_message(GROUP_CHAT_ID, "🌙 <b>Bedtime Reminder</b>\nSleep early and protect your streak!", parse_mode=ParseMode.HTML)
 
-    sent = await context.bot.send_message(
-        GROUP_CHAT_ID,
-        "🏆 <b>Leaderboard</b>\n\n" + "\n".join(lines),
-        parse_mode="HTML",
-    )
-
-    try:
-        await context.bot.pin_chat_message(
-            GROUP_CHAT_ID, sent.message_id, disable_notification=True
-        )
-    except:
-        pass
-
-async def bedtime_reminder(context):
-    await context.bot.send_message(
-        GROUP_CHAT_ID,
-        "🌙 Sleep early, champions.\nTomorrow’s streak depends on tonight’s discipline.",
-        parse_mode="HTML",
-    )
-
-async def weekly_summary(context):
+async def send_weekly_summary(context: ContextTypes.DEFAULT_TYPE):
     end = datetime.now(TZ).date()
     start = end - timedelta(days=6)
-    start_iso, end_iso = start.isoformat(), end.isoformat()
-
     async with aiosqlite.connect(DB_FILE) as db:
-        recs = await get_records_between(
-            db, GROUP_CHAT_ID, start_iso, end_iso
-        )
-
-    from collections import defaultdict
-    count = defaultdict(int)
-    avg_times = defaultdict(list)
-
-    for uid, d, t in recs:
-        count[uid] += 1
-        avg_times[uid].append(t)
-
-    if not count:
-        return
-
-    items = sorted(count.items(), key=lambda x: x[1], reverse=True)
+        recs = await get_records_between(db, GROUP_CHAT_ID, start.isoformat(), end.isoformat())
+    user_counts = defaultdict(int)
+    user_times = defaultdict(list)
+    for uid, d, hhmm in recs:
+        user_counts[uid] += 1
+        user_times[uid].append(hhmm)
+    if not user_counts: return
+    items = sorted(user_counts.items(), key=lambda x: x[1], reverse=True)
     lines = []
-    rank = 1
-    for uid, c in items[:10]:
-        avg = average_time_str(avg_times[uid])
-        try:
-            member = await context.bot.get_chat_member(GROUP_CHAT_ID, uid)
-            name = member.user.mention_html()
-        except:
-            name = str(uid)
+    for i, (uid, cnt) in enumerate(items[:10], 1):
+        try: mention = (await context.bot.get_chat_member(GROUP_CHAT_ID, uid)).user.mention_html()
+        except: mention = str(uid)
+        avg = average_time_str(user_times[uid])
+        lines.append(f"{i}. {mention} — {cnt} check-ins, avg wake {avg}")
+    text = f"📅 <b>Weekly Summary</b> ({start} to {end})\n\n" + "\n".join(lines)
+    await context.bot.send_message(GROUP_CHAT_ID, text, parse_mode=ParseMode.HTML)
 
-        lines.append(f"{rank}. {name} — {c} check-ins, avg {avg}")
-        rank += 1
-
-    await context.bot.send_message(
-        GROUP_CHAT_ID,
-        f"📅 <b>Weekly Summary</b>\n({start_iso} to {end_iso})\n\n"
-        + "\n".join(lines),
-        parse_mode="HTML",
-    )
-
-# --------------- Boot ---------------
+# ---------------- Main -----------------
 async def main():
     await init_db()
-
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("reset", reset_cmd))
     app.add_handler(CommandHandler("setstreak", setstreak_cmd))
     app.add_handler(CommandHandler("mystats", mystats_cmd))
-    app.add_handler(CommandHandler("leaderboard", leaderboard_cmd))
-    app.add_handler(MessageHandler(filters.Regex(r"(?i)^checkin"), checkin_handler))
+    app.add_handler(CommandHandler("leaderboard", lambda u,c: asyncio.create_task(send_leaderboard(c))))
+    app.add_handler(MessageHandler(filters.Regex(r'(?i)^checkin($|\s+)'), checkin_handler))
 
     jq = app.job_queue
+    jq.run_daily(lambda c: asyncio.create_task(send_leaderboard(c)), time=time(LEADERBOARD_HOUR,0,tzinfo=TZ))
+    jq.run_daily(lambda c: asyncio.create_task(send_bedtime_reminder(c)), time=time(BEDTIME_HOUR,0,tzinfo=TZ))
+    jq.run_daily(lambda c: asyncio.create_task(send_weekly_summary(c)), time=time(WEEKLY_SUMMARY_HOUR,0,tzinfo=TZ))
 
-    jq.run_daily(
-        lambda c: asyncio.create_task(send_leaderboard(c)),
-        time=time(LEADERBOARD_HOUR, 0, tzinfo=TZ),
-    )
-
-    jq.run_daily(
-        lambda c: asyncio.create_task(bedtime_reminder(c)),
-        time=time(BEDTIME_HOUR, 0, tzinfo=TZ),
-    )
-
-    jq.run_daily(
-        lambda c: asyncio.create_task(weekly_summary(c)),
-        time=time(WEEKLY_SUMMARY_HOUR, 0, tzinfo=TZ),
-    )
-
-    print("Bot running on Render...")
-    app.run_polling()
+    print("Bot starting...")
+    await app.run_polling()
 
 if __name__ == "__main__":
     asyncio.run(main())
