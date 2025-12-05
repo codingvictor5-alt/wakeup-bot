@@ -330,13 +330,14 @@ async def send_weekly_summary(context: ContextTypes.DEFAULT_TYPE):
 async def main():
     await init_db()
     app = ApplicationBuilder().token(BOT_TOKEN).build()
-
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("reset", reset_cmd))
     app.add_handler(CommandHandler("setstreak", setstreak_cmd))
     app.add_handler(CommandHandler("mystats", mystats_cmd))
     app.add_handler(CommandHandler("leaderboard", lambda u,c: asyncio.create_task(send_leaderboard(c))))
+    app.add_handler(CommandHandler("checkin", checkin_handler))
     app.add_handler(MessageHandler(filters.Regex(r'(?i)^checkin($|\s+)'), checkin_handler))
+
 
     jq = app.job_queue
     jq.run_daily(lambda c: asyncio.create_task(send_leaderboard(c)), time=time(LEADERBOARD_HOUR,0,tzinfo=TZ))
