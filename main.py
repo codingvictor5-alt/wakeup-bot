@@ -290,4 +290,12 @@ async def main():
     await app.run_polling()
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    import logging
+    logging.basicConfig(level=logging.INFO)
+    import asyncio
+    import sys
+
+    import telegram
+    from telegram.ext import ApplicationBuilder
+
+    main()  # just call it, do NOT wrap in asyncio.run()
