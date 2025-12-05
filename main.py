@@ -187,6 +187,7 @@ async def setstreak_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await db.commit()
     await update.message.reply_text(f"✅ {user.mention_html()} streak set to {new}. Badge: {badge or 'None'}.", parse_mode=ParseMode.HTML)
 
+
 async def mystats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != GROUP_CHAT_ID: return
     user = update.effective_user
@@ -194,13 +195,25 @@ async def mystats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await ensure_user_row(db, GROUP_CHAT_ID, user.id)
         row = await get_user(db, GROUP_CHAT_ID, user.id)
         recs = await get_user_records(db, GROUP_CHAT_ID, user.id)
+        # Get max streak
+        cur = await db.execute("SELECT MAX(streak) FROM users WHERE chat_id=?", (GROUP_CHAT_ID,))
+        max_streak_row = await cur.fetchone()
+        max_streak = max_streak_row[0] if max_streak_row and max_streak_row[0] else 0
     if not row:
         await update.message.reply_text("No stats found. Do your first checkin!")
         return
     streak, last_checkin, last_time, badge = row
     avg = average_time_str(recs)
+    earliest = min(recs) if recs else "N/A"
     await update.message.reply_text(
-        f"📊 {user.mention_html()}'s stats:\n• Current streak: <b>{streak}</b>\n• Last check-in: <b>{last_checkin}</b>\n• Last wake-up: <b>{last_time}</b>\n• Avg wake-up: <b>{avg}</b>\n• Badge: <b>{badge or 'None'}</b>",
+        f"📊 <b>{user.full_name}'s Stats</b>\n"
+        f"• Current streak: <b>{streak}</b>\n"
+        f"• Max streak ever: <b>{max_streak}</b>\n"
+        f"• Last check-in: <b>{last_checkin}</b>\n"
+        f"• Last wake-up: <b>{last_time}</b>\n"
+        f"• Avg wake-up: <b>{avg}</b>\n"
+        f"• Earliest wake-up: <b>{earliest}</b>\n"
+        f"• Badge: <b>{badge or 'None'}</b>",
         parse_mode=ParseMode.HTML
     )
 
@@ -238,20 +251,56 @@ async def checkin_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.reply_text(f"🔥 {user.mention_html()} — streak now <b>{new_streak}</b>, wake-up: <b>{hhmm}</b>, badge: <b>{badge or 'None'}</b>", parse_mode=ParseMode.HTML)
 
 # ---------------- Scheduler Tasks -----------------
+
+
 async def send_leaderboard(context: ContextTypes.DEFAULT_TYPE):
     async with aiosqlite.connect(DB_FILE) as db:
-        rows = await get_top_streaks(db, GROUP_CHAT_ID, LEADERBOARD_TOP)
-    if not rows:
-        await context.bot.send_message(GROUP_CHAT_ID, "🏆 No leaderboard data yet.")
-        return
-    lines = []
-    for i, (uid, streak, badge) in enumerate(rows, 1):
-        try: mention = (await context.bot.get_chat_member(GROUP_CHAT_ID, uid)).user.mention_html()
-        except: mention = str(uid)
+        # Top streaks
+        top_streaks = await get_top_streaks(db, GROUP_CHAT_ID, LEADERBOARD_TOP)
+        # Earliest risers (average wake-up time)
+        cur = await db.execute(
+            "SELECT user_id, time FROM records WHERE chat_id=?",
+            (GROUP_CHAT_ID,)
+        )
+        records = await cur.fetchall()
+    
+    # Aggregate earliest risers
+    times_by_user = defaultdict(list)
+    for uid, t in records:
+        times_by_user[uid].append(t)
+    
+    avg_times_by_user = {}
+    for uid, times in times_by_user.items():
+        mins = [int(h)*60 + int(m) for h, m in (map(int, x.split(":")) for x in times)]
+        avg_mins = sum(mins)//len(mins)
+        avg_times_by_user[uid] = avg_mins
+    
+    earliest_risers = sorted(avg_times_by_user.items(), key=lambda x: x[1])[:LEADERBOARD_TOP]
+
+    # Format streak leaderboard
+    streak_lines = []
+    for i, (uid, streak, badge) in enumerate(top_streaks, 1):
+        try:
+            mention = (await context.bot.get_chat_member(GROUP_CHAT_ID, uid)).user.mention_html()
+        except:
+            mention = str(uid)
         b = f" ({badge})" if badge else ""
-        lines.append(f"{i}. {mention} — <b>{streak}</b> days{b}")
-    text = "🏆 <b>Daily Leaderboard</b>\n\n" + "\n".join(lines)
-    await context.bot.send_message(GROUP_CHAT_ID, text, parse_mode=ParseMode.HTML)
+        streak_lines.append(f"{i}. {mention} — <b>{streak}</b> days{b}")
+    streak_text = "🏆 <b>Top Streaks</b>\n\n" + "\n".join(streak_lines) if streak_lines else "No streak data yet."
+
+    # Format earliest risers leaderboard
+    early_lines = []
+    for i, (uid, mins) in enumerate(earliest_risers, 1):
+        try:
+            mention = (await context.bot.get_chat_member(GROUP_CHAT_ID, uid)).user.mention_html()
+        except:
+            mention = str(uid)
+        h, m = divmod(mins, 60)
+        early_lines.append(f"{i}. {mention} — ⏰ <b>{h:02d}:{m:02d}</b>")
+    early_text = "🌅 <b>Earliest Risers</b>\n\n" + "\n".join(early_lines) if early_lines else "No wake-up data yet."
+
+    # Send both leaderboards
+    await context.bot.send_message(GROUP_CHAT_ID, f"{streak_text}\n\n{early_text}", parse_mode=ParseMode.HTML)
 
 async def send_bedtime_reminder(context: ContextTypes.DEFAULT_TYPE):
     await context.bot.send_message(GROUP_CHAT_ID, "🌙 <b>Bedtime Reminder</b>\nSleep early and protect your streak!", parse_mode=ParseMode.HTML)
