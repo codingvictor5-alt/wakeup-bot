@@ -1,7 +1,7 @@
 # server.py
 import os
 import threading
-import time
+import time as time_module
 from flask import Flask
 import requests
 
@@ -28,7 +28,7 @@ def keep_pinging():
         except Exception as e:
             print("❌ Self-ping error:", e)
 
-        time.sleep(120)   # ping every 2 minutes
+        time_module.sleep(120)   # ping every 2 minutes
 
 
 def run():
