@@ -6,7 +6,8 @@ Drop into your repo, set environment variables on Render, push, deploy.
 
 import os
 import asyncio
-from datetime import datetime, time, timedelta, date
+from datetime import datetime, timedelta, date
+from datetime import time as dt_time
 from zoneinfo import ZoneInfo
 import statistics
 from typing import Optional, List, Tuple, Dict, Any
@@ -416,9 +417,9 @@ async def main():
     jq = app.job_queue
     if jq:
         try:
-            jq.run_daily(lambda ctx: asyncio.create_task(send_leaderboard(ctx)), time=time(LEADERBOARD_HOUR,0,tzinfo=TZ))
-            jq.run_daily(lambda ctx: asyncio.create_task(send_bedtime_reminder(ctx)), time=time(BEDTIME_HOUR,0,tzinfo=TZ))
-            jq.run_daily(lambda ctx: asyncio.create_task(send_weekly_summary(ctx)), time=time(WEEKLY_SUMMARY_HOUR,0,tzinfo=TZ))
+            jq.run_daily(lambda ctx: asyncio.create_task(send_leaderboard(ctx)), time=dt_time(LEADERBOARD_HOUR,0,tzinfo=TZ))
+            jq.run_daily(lambda ctx: asyncio.create_task(send_bedtime_reminder(ctx)), time=dt_time(BEDTIME_HOUR,0,tzinfo=TZ))
+            jq.run_daily(lambda ctx: asyncio.create_task(send_weekly_summary(ctx)), time=dt_time(WEEKLY_SUMMARY_HOUR,0,tzinfo=TZ))
             jq.run_repeating(lambda c: asyncio.create_task(send_motivation(c)), interval=3600, first=0)
             print("✅ JobQueue scheduled tasks registered.")
         except Exception as e:
