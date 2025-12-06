@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Group-only Wakeup Bot (PostgreSQL-ready for Render)
-Requires: python-telegram-bot>=20.0, asyncpg, python-dotenv
+Group-only Wakeup Bot (Render + Neon + Self-Ping Keep-Alive)
+Requires: python-telegram-bot>=20.0, asyncpg, python-dotenv, aiohttp
 """
 from dotenv import load_dotenv
 import os
@@ -12,6 +12,7 @@ import statistics
 import asyncpg
 from typing import Optional, List, Tuple
 from collections import defaultdict
+import aiohttp
 
 from telegram import Update
 from telegram.constants import ParseMode
@@ -28,7 +29,8 @@ load_dotenv()  # This reads your .env file
 # ---------- CONFIG ----------
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GROUP_CHAT_ID_RAW = os.getenv("GROUP_CHAT_ID")
-DATABASE_URL = os.getenv("DATABASE_URL")  # NEW: PostgreSQL connection string
+DATABASE_URL = os.getenv("DATABASE_URL")
+RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL")  # NEW: Your Render app URL
 
 if not BOT_TOKEN:
     raise SystemExit("Error: BOT_TOKEN env var required.")
@@ -109,11 +111,50 @@ def badge_for_streak(streak: int) -> Optional[str]:
     if streak >= BADGE_THRESHOLDS[0]: return "Bronze"
     return None
 
+# ----------------- SELF-PING KEEP-ALIVE -----------------
+async def self_ping_task():
+    """
+    Keeps the bot awake by pinging itself every 10 minutes.
+    This prevents Render from spinning down the free instance.
+    """
+    if not RENDER_EXTERNAL_URL:
+        print("⚠️  RENDER_EXTERNAL_URL not set - self-ping disabled")
+        print("💡 Set RENDER_EXTERNAL_URL env var to enable keep-awake feature")
+        return
+    
+    # Wait 2 minutes before starting pings (let bot initialize)
+    await asyncio.sleep(120)
+    
+    ping_url = f"{RENDER_EXTERNAL_URL.rstrip('/')}/health"
+    print(f"🔄 Self-ping enabled: {ping_url}")
+    print(f"⏰ Will ping every 10 minutes to stay awake")
+    
+    async with aiohttp.ClientSession() as session:
+        while True:
+            try:
+                await asyncio.sleep(600)  # 10 minutes = 600 seconds
+                async with session.get(ping_url, timeout=30) as resp:
+                    if resp.status == 200:
+                        print(f"✅ Self-ping OK at {datetime.now(TZ).strftime('%Y-%m-%d %H:%M:%S')}")
+                    else:
+                        print(f"⚠️  Self-ping returned status {resp.status}")
+            except asyncio.CancelledError:
+                print("🛑 Self-ping task cancelled")
+                break
+            except Exception as e:
+                print(f"❌ Self-ping error: {e}")
+                # Continue anyway - don't crash the bot
+
 # ---------------- DB -----------------
 async def init_db():
-    """Initialize PostgreSQL connection pool and create tables"""
     global db_pool
-    db_pool = await asyncpg.create_pool(DATABASE_URL, min_size=1, max_size=10)
+    print("🔄 Connecting to database...")
+    db_pool = await asyncpg.create_pool(
+        DATABASE_URL,
+        min_size=1,
+        max_size=10,
+        command_timeout=60
+    )
     async with db_pool.acquire() as conn:
         await conn.execute(CREATE_TABLES_SQL)
     print("✅ Database connected and tables created!")
@@ -188,6 +229,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != GROUP_CHAT_ID:
         await update.message.reply_text("This bot works only in the configured group.")
         return
+    
     await update.message.reply_text(
         "👋 Wakeup Bot ready!\nCommands:\ncheckin, /reset, /setstreak <n>, /mystats, /leaderboard"
     )
@@ -221,12 +263,16 @@ async def mystats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await ensure_user_row(conn, GROUP_CHAT_ID, user.id)
         row = await get_user(conn, GROUP_CHAT_ID, user.id)
         recs = await get_user_records(conn, GROUP_CHAT_ID, user.id)
+        # Get max streak
         max_streak_row = await conn.fetchrow("SELECT MAX(streak) FROM users WHERE chat_id=$1", GROUP_CHAT_ID)
         max_streak = max_streak_row['max'] if max_streak_row and max_streak_row['max'] else 0
     if not row:
         await update.message.reply_text("No stats found. Do your first checkin!")
         return
-    streak, last_checkin, last_time, badge = row['streak'], row['last_checkin'], row['last_time'], row['badge']
+    streak = row['streak']
+    last_checkin = row['last_checkin']
+    last_time = row['last_time']
+    badge = row['badge']
     avg = average_time_str(recs)
     earliest = min(recs) if recs else "N/A"
     await update.message.reply_text(
@@ -241,6 +287,7 @@ async def mystats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode=ParseMode.HTML
     )
 
+# ---------------- Checkin -----------------
 async def checkin_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.effective_message
     if msg.chat.id != GROUP_CHAT_ID: return
@@ -274,9 +321,15 @@ async def checkin_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ---------------- Scheduler Tasks -----------------
 async def send_leaderboard(context: ContextTypes.DEFAULT_TYPE):
     async with db_pool.acquire() as conn:
+        # Top streaks
         top_streaks = await get_top_streaks(conn, GROUP_CHAT_ID, LEADERBOARD_TOP)
-        records = await conn.fetch("SELECT user_id, time FROM records WHERE chat_id=$1", GROUP_CHAT_ID)
+        # Earliest risers (average wake-up time)
+        records = await conn.fetch(
+            "SELECT user_id, time FROM records WHERE chat_id=$1",
+            GROUP_CHAT_ID
+        )
     
+    # Aggregate earliest risers
     times_by_user = defaultdict(list)
     for rec in records:
         times_by_user[rec['user_id']].append(rec['time'])
@@ -289,6 +342,7 @@ async def send_leaderboard(context: ContextTypes.DEFAULT_TYPE):
     
     earliest_risers = sorted(avg_times_by_user.items(), key=lambda x: x[1])[:LEADERBOARD_TOP]
 
+    # Format streak leaderboard
     streak_lines = []
     for i, (uid, streak, badge) in enumerate(top_streaks, 1):
         try:
@@ -299,6 +353,7 @@ async def send_leaderboard(context: ContextTypes.DEFAULT_TYPE):
         streak_lines.append(f"{i}. {mention} — <b>{streak}</b> days{b}")
     streak_text = "🏆 <b>Top Streaks</b>\n\n" + "\n".join(streak_lines) if streak_lines else "No streak data yet."
 
+    # Format earliest risers leaderboard
     early_lines = []
     for i, (uid, mins) in enumerate(earliest_risers, 1):
         try:
@@ -309,6 +364,7 @@ async def send_leaderboard(context: ContextTypes.DEFAULT_TYPE):
         early_lines.append(f"{i}. {mention} — ⏰ <b>{h:02d}:{m:02d}</b>")
     early_text = "🌅 <b>Earliest Risers</b>\n\n" + "\n".join(early_lines) if early_lines else "No wake-up data yet."
 
+    # Send both leaderboards
     await context.bot.send_message(GROUP_CHAT_ID, f"{streak_text}\n\n{early_text}", parse_mode=ParseMode.HTML)
 
 async def send_bedtime_reminder(context: ContextTypes.DEFAULT_TYPE):
@@ -337,8 +393,13 @@ async def send_weekly_summary(context: ContextTypes.DEFAULT_TYPE):
 
 # ---------------- Main -----------------
 async def main():
+    # Initialize database
     await init_db()
+    
+    # Build application
     app = ApplicationBuilder().token(BOT_TOKEN).build()
+    
+    # Add command handlers
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("reset", reset_cmd))
     app.add_handler(CommandHandler("setstreak", setstreak_cmd))
@@ -347,17 +408,18 @@ async def main():
     app.add_handler(CommandHandler("checkin", checkin_handler))
     app.add_handler(MessageHandler(filters.Regex(r'(?i)^checkin($|\s+)'), checkin_handler))
 
+    # Add scheduled jobs
     jq = app.job_queue
     jq.run_daily(lambda c: asyncio.create_task(send_leaderboard(c)), time=time(LEADERBOARD_HOUR,0,tzinfo=TZ))
     jq.run_daily(lambda c: asyncio.create_task(send_bedtime_reminder(c)), time=time(BEDTIME_HOUR,0,tzinfo=TZ))
     jq.run_daily(lambda c: asyncio.create_task(send_weekly_summary(c)), time=time(WEEKLY_SUMMARY_HOUR,0,tzinfo=TZ))
 
-    print("Bot starting...")
-    await app.run_polling()
+    # Start self-ping task in background (keeps bot awake on Render)
+    asyncio.create_task(self_ping_task())
+
+    print("🚀 Bot starting...")
+    print(f"📊 Render free tier: 750 hours/month (enough for 24/7!)")
+    await app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
-    import nest_asyncio
-    nest_asyncio.apply()
-    loop = asyncio.get_event_loop()
-    loop.create_task(main())
-    loop.run_forever()
+    asyncio.run(main())
