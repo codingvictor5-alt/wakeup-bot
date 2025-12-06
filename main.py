@@ -7,7 +7,7 @@ Drop into your repo, set environment variables on Render, push, deploy.
 import os
 import asyncio
 from datetime import datetime, timedelta, date
-from datetime import time as time
+from datetime import time
 from zoneinfo import ZoneInfo
 import statistics
 from typing import Optional, List, Tuple, Dict, Any
@@ -448,7 +448,8 @@ async def main():
 # Combined Render-friendly entry with periodic server pings
 
 if __name__ == "__main__":
-    import threading, asyncio, time
+    import threading, asyncio
+    import time as time_module
     from server import run as start_server
 
     # Start Flask server in a separate thread
@@ -462,7 +463,7 @@ if __name__ == "__main__":
                 requests.get("http://localhost:10000")  # adjust port if needed
             except Exception:
                 pass
-            time.sleep(180)  # 3 minutes
+            time_module.sleep(180)  # 3 minutes
 
     threading.Thread(target=keep_alive, daemon=True).start()
 
