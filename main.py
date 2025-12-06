@@ -15,6 +15,7 @@ from collections import defaultdict
 
 from dotenv import load_dotenv
 from motivate import send_motivation,motivate_command
+from tagger import generate_mentions
 load_dotenv()
 
 # Third-party DB + HTTP
@@ -328,7 +329,21 @@ async def send_leaderboard(context: ContextTypes.DEFAULT_TYPE):
     await safe_send(context.bot, GROUP_CHAT_ID, f"{streak_text}\n\n{early_text}", parse_mode=ParseMode.HTML)
 
 async def send_bedtime_reminder(context: ContextTypes.DEFAULT_TYPE):
-    await safe_send(context.bot, GROUP_CHAT_ID, "🌙 <b>Bedtime Reminder</b>\nWind down and protect your streak!", parse_mode=ParseMode.HTML)
+    tags = await generate_mentions(context)
+
+    text = (
+        "🌙 <b>Bedtime Reminder</b>\n"
+        "Wind down and protect your streak!\n\n"
+        f"{tags}"
+    )
+
+    await safe_send(
+        context.bot,
+        GROUP_CHAT_ID,
+        text,
+        parse_mode=ParseMode.HTML
+    )
+
 
 async def send_weekly_summary(context: ContextTypes.DEFAULT_TYPE):
     end = datetime.now(TZ).date()
