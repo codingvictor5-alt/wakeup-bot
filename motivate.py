@@ -17,10 +17,16 @@ QUOTES = [
 ]
 
 async def send_motivation(context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat.id != GROUP_CHAT_ID:
+        return
+    user = update.effective_user
     chat_id = context.job.chat_id
     quote = random.choice(QUOTES)
     await context.bot.send_message(chat_id, f"💡 Motivation: {quote}")
 
 async def motivate_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat.id != GROUP_CHAT_ID:
+        return
+    user = update.effective_user
     quote = random.choice(QUOTES)
     await update.message.reply_text(f"💡 Motivation: {quote}")
