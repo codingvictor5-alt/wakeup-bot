@@ -355,23 +355,28 @@ async def send_weekly_summary(context: ContextTypes.DEFAULT_TYPE):
     await safe_send(context.bot, GROUP_CHAT_ID, text, parse_mode=ParseMode.HTML)
 
 # ------------- Scheduler fallback if JobQueue missing -------------
-async def fallback_daily_runner(coro_func, hour:int, minute:int=0, ctx=None):
-    """Run the coroutine daily at given hour:minute (Asia/Kolkata)"""
+async def fallback_daily_runner(func, hour, minute, ctx=None):
+    """Runs daily fallback tasks when JobQueue is unavailable."""
     while True:
-        now = datetime.now(TZ)
-        target = datetime.combine(now.date(), time(hour, minute, tzinfo=TZ))
-        if target <= now:
-            target = target + timedelta(days=1)
-        wait = (target - now).total_seconds()
-        await asyncio.sleep(wait)
         try:
-            if ctx:
-                await coro_func(ctx)
-            else:
-                await coro_func(None)
+            now = datetime.now(TZ)
+            target = datetime.combine(now.date(), time(hour, minute, tzinfo=TZ))
+
+            if now > target:
+                target = target + timedelta(days=1)
+
+            wait_seconds = (target - now).total_seconds()
+            print(f"⏳ Waiting {wait_seconds} seconds for {func.__name__}")
+
+            await asyncio.sleep(wait_seconds)
+            await func(ctx)
+
         except Exception as e:
-            print("⚠️ scheduled task error:", e)
-        # loop continues for next day
+            print(f"❌ Error in fallback_daily_runner for {func.__name__}: {e}")
+
+        # After running, schedule next day
+        await asyncio.sleep(1)
+
 
 # ------------- Global error handler -------------
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
