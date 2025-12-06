@@ -425,30 +425,36 @@ async def main():
     await app.run_polling(drop_pending_updates=True)
 
 # ------------- ENTRY POINT (Render + Local friendly) -------------
-if __name__ == "__main__":
-    import threading
-    import asyncio
 
-    # Try enabling nested event loops (Render sometimes needs it)
+
+# Combined Render-friendly entry with periodic server pings
+
+if __name__ == "__main__":
+    import threading, asyncio, time
+    from server import run as start_server
+
+    # Start Flask server in a separate thread
+    threading.Thread(target=start_server, daemon=True).start()
+
+    # Keep server alive by pinging every 3 minutes
+    def keep_alive():
+        import requests
+        while True:
+            try:
+                requests.get("http://localhost:10000")  # adjust port if needed
+            except Exception:
+                pass
+            time.sleep(180)  # 3 minutes
+
+    threading.Thread(target=keep_alive, daemon=True).start()
+
+    # Start Telegram bot
     try:
         import nest_asyncio
         nest_asyncio.apply()
-    except Exception:
+    except:
         pass
 
-    # --- Start the Render web-ping server on a separate thread ---
-    try:
-        from server import run as start_server
-        threading.Thread(target=start_server, daemon=True).start()
-    except Exception as e:
-        print("Server thread failed:", e)
-
-    # --- Start the Telegram bot (main async program) ---
-    try:
-        asyncio.run(main())
-    except RuntimeError:
-        # Render may already have a running loop → fallback
-        loop = asyncio.get_event_loop()
-        loop.create_task(main())
-        loop.run_forever()
-
+    loop = asyncio.get_event_loop()
+    loop.create_task(main())
+    loop.run_forever()
