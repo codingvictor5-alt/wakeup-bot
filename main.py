@@ -11,6 +11,8 @@ from zoneinfo import ZoneInfo
 import statistics
 from typing import Optional, List, Tuple, Dict, Any
 from collections import defaultdict
+from motivate import motivate_command, send_motivation
+
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -393,6 +395,7 @@ async def main():
     app.add_handler(CommandHandler("mystats", mystats_cmd))
     app.add_handler(CommandHandler("leaderboard", lambda u,c: asyncio.create_task(send_leaderboard(c))))
     app.add_handler(CommandHandler("checkin", checkin_handler))
+    app.add_handler(CommandHandler("motivate", motivate_command))
     # Also accept plain "checkin" without slash (privacy may block plain messages unless disabled)
     app.add_handler(MessageHandler(filters.Regex(r'(?i)^checkin($|\s+)'), checkin_handler))
 
@@ -405,24 +408,40 @@ async def main():
             jq.run_daily(lambda ctx: asyncio.create_task(send_leaderboard(ctx)), time=time(LEADERBOARD_HOUR,0,tzinfo=TZ))
             jq.run_daily(lambda ctx: asyncio.create_task(send_bedtime_reminder(ctx)), time=time(BEDTIME_HOUR,0,tzinfo=TZ))
             jq.run_daily(lambda ctx: asyncio.create_task(send_weekly_summary(ctx)), time=time(WEEKLY_SUMMARY_HOUR,0,tzinfo=TZ))
+            jq.run_repeating(lambda c: asyncio.create_task(send_motivation(c)), interval=3600, first=0)
             print("✅ JobQueue scheduled tasks registered.")
         except Exception as e:
             print("⚠️ JobQueue scheduling failed, falling back:", e)
             # fallback below
             jq = None
 
-    if not jq:
-        # schedule fallback tasks using create_task
-        asyncio.create_task(fallback_daily_runner(send_leaderboard, LEADERBOARD_HOUR, 0, ctx=None))
-        asyncio.create_task(fallback_daily_runner(send_bedtime_reminder, BEDTIME_HOUR, 0, ctx=None))
-        asyncio.create_task(fallback_daily_runner(send_weekly_summary, WEEKLY_SUMMARY_HOUR, 0, ctx=None))
-        print("ℹ️ Fallback scheduler running for daily jobs.")
+if not jq:
+    # schedule fallback tasks using create_task
+    asyncio.create_task(fallback_daily_runner(send_leaderboard, LEADERBOARD_HOUR, 0, ctx=None))
+    asyncio.create_task(fallback_daily_runner(send_bedtime_reminder, BEDTIME_HOUR, 0, ctx=None))
+    asyncio.create_task(fallback_daily_runner(send_weekly_summary, WEEKLY_SUMMARY_HOUR, 0, ctx=None))
+    asyncio.create_task(fallback_hourly_runner(send_motivation, ctx=None))  # <-- new
+    print("ℹ️ Fallback scheduler running for daily and hourly jobs.")
+
+
+
+
+    
 
     # start keep-alive self-ping if configured
     asyncio.create_task(self_ping_task())
 
     print("🚀 Bot starting (polling)...")
     await app.run_polling(drop_pending_updates=True)
+
+async def fallback_hourly_runner(func, ctx=None):
+    """Runs a function every hour if JobQueue is not available."""
+    while True:
+        try:
+            await func(ctx)
+        except Exception as e:
+            print(f"❌ Error in hourly fallback runner: {e}")
+        await asyncio.sleep(3600)  # 1 hour
 
 # ------------- ENTRY POINT (Render + Local friendly) -------------
 
