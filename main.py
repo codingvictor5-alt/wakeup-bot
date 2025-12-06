@@ -191,7 +191,7 @@ async def self_ping_task():
                     print(f"🔔 self-ping {r.status} @ {datetime.now(TZ)}")
             except Exception as e:
                 print("⚠️ self-ping error:", e)
-            await asyncio.sleep(240)  # 4 minutes
+            await asyncio.sleep(200)  # 4 minutes
 
 # ------------- Command Handlers -------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -424,15 +424,31 @@ async def main():
     print("🚀 Bot starting (polling)...")
     await app.run_polling(drop_pending_updates=True)
 
-# ------------- ENTRY (Render-friendly loop) -------------
+# ------------- ENTRY POINT (Render + Local friendly) -------------
 if __name__ == "__main__":
-    # Use nest_asyncio on platforms that already run an event loop (Render)
+    import threading
+    import asyncio
+
+    # Try enabling nested event loops (Render sometimes needs it)
     try:
         import nest_asyncio
         nest_asyncio.apply()
     except Exception:
         pass
 
-    loop = asyncio.get_event_loop()
-    loop.create_task(main())
-    loop.run_forever()
+    # --- Start the Render web-ping server on a separate thread ---
+    try:
+        from server import run as start_server
+        threading.Thread(target=start_server, daemon=True).start()
+    except Exception as e:
+        print("Server thread failed:", e)
+
+    # --- Start the Telegram bot (main async program) ---
+    try:
+        asyncio.run(main())
+    except RuntimeError:
+        # Render may already have a running loop → fallback
+        loop = asyncio.get_event_loop()
+        loop.create_task(main())
+        loop.run_forever()
+
