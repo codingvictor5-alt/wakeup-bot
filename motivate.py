@@ -13,17 +13,28 @@ GROUP_CHAT_ID = int(os.getenv("GROUP_CHAT_ID", "0"))
 # ---------------- QUOTES ---------------- #
 
 QUOTES = [
-    "Success is not final; failure is not fatal — it is the courage to continue that counts. — Winston Churchill",
-    "Your future is created by what you do today, not tomorrow. — Robert Kiyosaki",
-    "The secret of your success is found in your daily routine. — John C. Maxwell",
-    "Dream big. Start small. Act now. — Robin Sharma",
-    "Wake up early. Stay consistent. Win every day. — Jocko Willink",
-    "Discipline equals freedom. — Jocko Willink",
-    "If you want to be the best, you have to do things others aren’t willing to do. — Kobe Bryant",
-    "Every morning you have two choices: continue to sleep with dreams or wake up and chase them. — Arnold Schwarzenegger",
-    "Losers wait. Winners create. — Gary Vaynerchuk",
-    "Small daily improvements lead to stunning long-term results. — James Clear"
+    "“If you win the morning, you win the day.” – Tim Ferriss",
+    "“Your first hour sets the tone for everything that follows.” – Robin Sharma",
+    "“The way you start your day determines how well you live your day.” – Hal Elrod",
+    "“Success is built on the back of consistent mornings.” – James Clear",
+    "“Wake up early. Show up earlier. Do more than anyone expects.” – Gary Vaynerchuk",
+    "“Discipline is choosing what you want most over what you want now.” – Angela Duckworth",
+    "“The day is yours if you take the morning.” – Jocko Willink",
+    "“Small daily improvements over time lead to stunning results.” – Jeff Bezos",
+    "“Get up early, work hard, and don’t quit.” – Elon Musk",
+    "“Your habits determine your future more than your goals do.” – Naval Ravikant",
+    "“You have to put in the work before the world is awake.” – Kobe Bryant",
+    "“Energy is created by action, not motivation.” – Mel Robbins",
+    "“Own your morning. Elevate your life.” – Jay Shetty",
+    "“The early hours are your unfair advantage.” – Cal Newport",
+    "“If you want different results, you have to do things differently—starting with your mornings.” – Ray Dalio",
+    "“Success is the sum of small efforts repeated day in and day out.” – Satya Nadella",
+    "“Wake up and attack the day with ambition.” – Dwayne Johnson",
+    "“Consistency is harder when no one is watching. That’s why it counts.” – James Clear",
+    "“Your future self is built in the quiet hours when others are sleeping.” – Simon Sinek",
+    "“The earlier you rise, the more life you get to live.” – Mark Manson"
 ]
+
 
 # -----------------------------------------------------
 # SAFE SEND  (prevents bot crash from Blocked/Left/etc)
