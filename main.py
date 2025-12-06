@@ -41,7 +41,8 @@ RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL")  # e.g. https://your-serv
 TZ = ZoneInfo("Asia/Kolkata")
 
 LEADERBOARD_HOUR = int(os.environ.get("LEADERBOARD_HOUR", 5))
-BEDTIME_HOUR = int(os.environ.get("BEDTIME_HOUR", 21))
+BEDTIME_HOUR = int(os.environ.get("BEDTIME_HOUR", 23))
+BEDTIME_MINUTE = int(os.environ.get("BEDTIME_MINUTE", 33))
 WEEKLY_SUMMARY_DAY = int(os.environ.get("WEEKLY_SUMMARY_DAY", 6))  # Sunday=6
 WEEKLY_SUMMARY_HOUR = int(os.environ.get("WEEKLY_SUMMARY_HOUR", 6))
 LEADERBOARD_TOP = int(os.environ.get("LEADERBOARD_TOP", 5))
@@ -433,7 +434,7 @@ async def main():
     if jq:
         try:
             jq.run_daily(lambda ctx: asyncio.create_task(send_leaderboard(ctx)), time=time(LEADERBOARD_HOUR,0,tzinfo=TZ))
-            jq.run_daily(lambda ctx: asyncio.create_task(send_bedtime_reminder(ctx)), time=time(BEDTIME_HOUR,0,tzinfo=TZ))
+            jq.run_daily(lambda ctx: asyncio.create_task(send_bedtime_reminder(ctx)), time=time(BEDTIME_HOUR, BEDTIME_MINUTE,tzinfo=TZ))
             jq.run_daily(lambda ctx: asyncio.create_task(send_weekly_summary(ctx)), time=time(WEEKLY_SUMMARY_HOUR,0,tzinfo=TZ))
             jq.run_repeating(lambda c: asyncio.create_task(send_motivation(c)), interval=3600, first=0)
             print("✅ JobQueue scheduled tasks registered.")
@@ -445,7 +446,7 @@ async def main():
     if not jq:
         # schedule fallback tasks using create_task
         asyncio.create_task(fallback_daily_runner(send_leaderboard, LEADERBOARD_HOUR, 0, ctx=None))
-        asyncio.create_task(fallback_daily_runner(send_bedtime_reminder, BEDTIME_HOUR, 0, ctx=None))
+        asyncio.create_task(fallback_daily_runner(send_bedtime_reminder, BEDTIME_HOUR,  BEDTIME_MINUTE, ctx=None))
         asyncio.create_task(fallback_daily_runner(send_weekly_summary, WEEKLY_SUMMARY_HOUR, 0, ctx=None))
         asyncio.create_task(fallback_hourly_runner(send_motivation))
         if RENDER_EXTERNAL_URL: asyncio.create_task(self_ping_task())
