@@ -132,7 +132,7 @@ async def self_ping_task():
     async with aiohttp.ClientSession() as session:
         while True:
             try:
-                await asyncio.sleep(600)  # 10 minutes = 600 seconds
+                await asyncio.sleep(240)  # 10 minutes = 600 seconds
                 async with session.get(ping_url, timeout=30) as resp:
                     if resp.status == 200:
                         print(f"✅ Self-ping OK at {datetime.now(TZ).strftime('%Y-%m-%d %H:%M:%S')}")
