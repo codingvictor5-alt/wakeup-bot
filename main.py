@@ -13,7 +13,7 @@ from typing import Optional, List, Tuple, Dict, Any
 from collections import defaultdict
 
 from dotenv import load_dotenv
-from motivate import send_motivation
+from motivate import send_motivation,motivate_command
 load_dotenv()
 
 # Third-party DB + HTTP
