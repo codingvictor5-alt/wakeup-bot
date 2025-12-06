@@ -1,6 +1,6 @@
 import os
 from flask import Flask
-from waitress import serve
+
 
 app = Flask(__name__)
 
@@ -13,4 +13,4 @@ def run():
     port = int(os.getenv("PORT", 5000))
     print(f"🌐 Starting keep-alive server on port {port}...")
     app.run(host="0.0.0.0", port=port)
-    serve(app, host="0.0.0.0", port=port)
+  
