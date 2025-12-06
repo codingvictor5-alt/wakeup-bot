@@ -361,7 +361,7 @@ async def fallback_daily_runner(func, hour, minute, ctx=None):
     while True:
         try:
             now = datetime.now(TZ)
-            target = datetime.combine(now.date(), time(hour, minute, tzinfo=TZ))
+            target = datetime.combine(now.date(), dt_time(hour, minute, tzinfo=TZ))
 
             if now > target:
                 target = target + timedelta(days=1)
