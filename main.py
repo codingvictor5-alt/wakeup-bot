@@ -409,7 +409,7 @@ async def main():
     app.add_handler(CommandHandler("checkin", checkin_handler))
     # Also accept plain "checkin" without slash (privacy may block plain messages unless disabled)
     app.add_handler(MessageHandler(filters.Regex(r'(?i)^checkin($|\s+)'), checkin_handler))
-    app.add_handler(CommandHandler("motivate", lambda u,c: asyncio.create_task(send_motivation(c))))
+    app.add_handler(CommandHandler("motivate", motivate_command))
 
     app.add_error_handler(error_handler)
 
