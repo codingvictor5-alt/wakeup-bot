@@ -22,7 +22,11 @@ async def send_motivation(context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     chat_id = context.job.chat_id
     quote = random.choice(QUOTES)
-    await context.bot.send_message(chat_id, f"💡 Motivation: {quote}")
+    await update.message.reply_text(
+        f"💡 Motivation: {quote}</b>\n",
+        parse_mode=ParseMode.HTML
+    )
+    
 
 async def motivate_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != GROUP_CHAT_ID:
