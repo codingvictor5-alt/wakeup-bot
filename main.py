@@ -361,7 +361,7 @@ async def fallback_daily_runner(func, hour, minute, ctx=None):
     while True:
         try:
             now = datetime.now(TZ)
-            target = datetime.combine(now.date(), dt_time(hour, minute, tzinfo=TZ))
+            target = datetime.combine(now.date(), time(hour, minute, tzinfo=TZ))
 
             if now > target:
                 target = target + timedelta(days=1)
@@ -417,9 +417,9 @@ async def main():
     jq = app.job_queue
     if jq:
         try:
-            jq.run_daily(lambda ctx: asyncio.create_task(send_leaderboard(ctx)), time=dt_time(LEADERBOARD_HOUR,0,tzinfo=TZ))
-            jq.run_daily(lambda ctx: asyncio.create_task(send_bedtime_reminder(ctx)), time=dt_time(BEDTIME_HOUR,0,tzinfo=TZ))
-            jq.run_daily(lambda ctx: asyncio.create_task(send_weekly_summary(ctx)), time=dt_time(WEEKLY_SUMMARY_HOUR,0,tzinfo=TZ))
+            jq.run_daily(lambda ctx: asyncio.create_task(send_leaderboard(ctx)), time=time(LEADERBOARD_HOUR,0,tzinfo=TZ))
+            jq.run_daily(lambda ctx: asyncio.create_task(send_bedtime_reminder(ctx)), time=time(BEDTIME_HOUR,0,tzinfo=TZ))
+            jq.run_daily(lambda ctx: asyncio.create_task(send_weekly_summary(ctx)), time=time(WEEKLY_SUMMARY_HOUR,0,tzinfo=TZ))
             jq.run_repeating(lambda c: asyncio.create_task(send_motivation(c)), interval=3600, first=0)
             print("✅ JobQueue scheduled tasks registered.")
         except Exception as e:
