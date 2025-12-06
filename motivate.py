@@ -31,7 +31,6 @@ async def motivate_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     quote = random.choice(QUOTES)
     text = f"💡 <b>Motivation:</b>\n{quote}"
-
     await update.message.reply_text(
         text=text,
         parse_mode=ParseMode.HTML
