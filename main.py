@@ -191,7 +191,7 @@ async def self_ping_task():
                     print(f"🔔 self-ping {r.status} @ {datetime.now(TZ)}")
             except Exception as e:
                 print("⚠️ self-ping error:", e)
-            await asyncio.sleep(600)  # 10 minutes
+            await asyncio.sleep(240)  # 4 minutes
 
 # ------------- Command Handlers -------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
