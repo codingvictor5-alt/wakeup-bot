@@ -7,7 +7,7 @@ Drop into your repo, set environment variables on Render, push, deploy.
 import os
 import asyncio
 from datetime import datetime, timedelta, date
-from datetime import time as dt_time
+from datetime import time as time
 from zoneinfo import ZoneInfo
 import statistics
 from typing import Optional, List, Tuple, Dict, Any
