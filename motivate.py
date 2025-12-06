@@ -26,12 +26,9 @@ async def send_motivation(context: ContextTypes.DEFAULT_TYPE):
     await safe_send(context.bot, GROUP_CHAT_ID, f"{text}", parse_mode=ParseMode.HTML)
 
 async def motivate_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_chat.id != GROUP_CHAT_ID:
-        return
+    msg = update.effective_message
+    if msg.chat.id != GROUP_CHAT_ID: return
     user = update.effective_user
     quote = random.choice(QUOTES)
     text = f"💡 <b>Motivation:</b>\n{quote}"
-    await update.message.reply_text(
-        text=text,
-        parse_mode=ParseMode.HTML
-    )
+   await msg.reply_text(f"{text}", parse_mode=ParseMode.HTML)
