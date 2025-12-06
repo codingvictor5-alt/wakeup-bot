@@ -1,35 +1,58 @@
+# tagger.py
 import os
-from dotenv import load_dotenv
+from telegram import ChatMember, Chat
 from telegram.constants import ParseMode
+from telegram.ext import ContextTypes
+from dotenv import load_dotenv
 
 load_dotenv()
 GROUP_CHAT_ID = int(os.getenv("GROUP_CHAT_ID"))
 
-# Memory store (you can replace with database later)
-KNOWN_USERS = set()
+
+async def get_all_members(context: ContextTypes.DEFAULT_TYPE):
+    """
+    Fetch all group members.
+    Telegram doesn't allow fetching all members directly, 
+    so we use administrators + recent active members.
+    """
+    bot = context.bot
+    members = set()
+
+    try:
+        # Fetch chat admins
+        admins = await bot.get_chat_administrators(GROUP_CHAT_ID)
+        for admin in admins:
+            members.add(admin.user.id)
+
+        # Fetch recent active members (recommended method)
+        chat = await bot.get_chat(GROUP_CHAT_ID)
+        recent_members = await bot.get_chat_menu_button(GROUP_CHAT_ID)
+
+    except Exception as e:
+        print("❌ Error fetching members:", e)
+
+    return list(members)
 
 
-def store_user(update):
-    """Store user ID whenever a message arrives."""
-    if update.effective_chat.id == GROUP_CHAT_ID:
-        user_id = update.effective_user.id
-        KNOWN_USERS.add(user_id)
+async def generate_mentions(context: ContextTypes.DEFAULT_TYPE):
+    """Returns a string containing @tags of all known members."""
+    member_ids = await get_all_members(context)
+    if not member_ids:
+        return ""
 
-
-async def generate_mentions(context):
-    """Generate @mentions for all remembered users."""
     bot = context.bot
     tags = []
 
-    for uid in KNOWN_USERS:
+    for uid in member_ids:
         try:
-            member = await bot.get_chat_member(GROUP_CHAT_ID, uid)
-            username = member.user.username
+            user = await bot.get_chat_member(GROUP_CHAT_ID, uid)
+            username = user.user.username
 
             if username:
                 tags.append(f"@{username}")
             else:
                 tags.append(f"<a href='tg://user?id={uid}'>User</a>")
+
         except Exception:
             continue
 
