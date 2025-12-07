@@ -99,41 +99,6 @@ async def ensure_user_row(conn, chat_id: int, user_id: int):
            VALUES ($1,$2,0,'','', '') ON CONFLICT DO NOTHING""",
         chat_id, user_id
     )
-def parse_time_string(s: str):
-    """
-    Parse time formats like:
-    - "5"
-    - "5:30"
-    - "5.30"
-    - "05:7"
-    Returns datetime.time or None if invalid.
-    """
-    s = s.strip().lower().replace("am", "").replace("pm", "")  # strip unused
-
-    # Replace "." with ":" for convenience
-    s = s.replace(".", ":")
-
-    parts = s.split(":")
-    try:
-        if len(parts) == 1:
-            # "5" → 5:00
-            hour = int(parts[0])
-            minute = 0
-        elif len(parts) == 2:
-            # "5:30"
-            hour = int(parts[0])
-            minute = int(parts[1])
-        else:
-            return None
-
-        if 0 <= hour <= 23 and 0 <= minute <= 59:
-            return time(hour, minute)
-
-    except:
-        return None
-
-    return None
-
 
 async def get_user(conn, chat_id:int, user_id:int):
     return await conn.fetchrow("SELECT streak, last_checkin, last_time, badge FROM users WHERE chat_id=$1 AND user_id=$2", chat_id, user_id)
