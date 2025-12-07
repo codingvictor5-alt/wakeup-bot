@@ -262,35 +262,99 @@ async def mystats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Checkin supports both /checkin and plain "checkin"
 async def checkin_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.effective_message
-    if msg.chat.id != GROUP_CHAT_ID: return
+    if msg.chat.id != GROUP_CHAT_ID:
+        return
+
     user = update.effective_user
     parts = msg.text.strip().split()
+
+    # ---- NEW: Enforce format and show instructions ----
+    if len(parts) < 2:
+        await msg.reply_text(
+            "⛔ <b>Check-in format incorrect!</b>\n\n"
+            "You must enter wake-up time.\n\n"
+            "✅ <b>Correct Format:</b>\n"
+            "<code>/checkin HH:MM</code>\n\n"
+            "📝 <b>Example:</b>\n"
+            "<code>/checkin 5:32</code>\n\n"
+            "⚠️ <b>Important:</b>\n"
+            "Your streak increases ONLY when wake-up time is between <b>04:00 AM</b> and <b>07:00 AM</b>.\n"
+            "Outside this range → streak resets to 0.",
+            parse_mode=ParseMode.HTML
+        )
+        return
+
     today_iso = datetime.now(TZ).date().isoformat()
 
-    async with db_pool.acquire() as conn:
-        await ensure_user_row(conn, GROUP_CHAT_ID, user.id)
-        if await user_checked_today(conn, GROUP_CHAT_ID, user.id, today_iso):
-            await msg.reply_text(f"⛔ {user.mention_html()} — you already checked in today.", parse_mode=ParseMode.HTML)
+    async with aiosqlite.connect(DB_FILE) as db:
+        # Ensure user row exists
+        await ensure_user_row(db, GROUP_CHAT_ID, user.id)
+
+        # Check if user already checked-in today
+        if await user_checked_today(db, GROUP_CHAT_ID, user.id, today_iso):
+            await msg.reply_text(
+                f"⛔ {user.mention_html()}, you have already checked in today.",
+                parse_mode=ParseMode.HTML
+            )
             return
-        t = parse_time_string(parts[1]) if len(parts) > 1 else datetime.now(TZ).time()
+
+        # Parse the HH:MM time provided
+        t = parse_time_string(parts[1])
         if not t:
-            await msg.reply_text("⛔ Invalid time. Use `checkin 5:30`", parse_mode=ParseMode.HTML)
+            await msg.reply_text(
+                "⛔ Invalid time format.\n"
+                "Use <code>HH:MM</code> (Example: <code>5:32</code>)",
+                parse_mode=ParseMode.HTML
+            )
             return
+
         hhmm = t.strftime("%H:%M")
+
+        # ---- Normal logic unchanged ----
         if not valid_wakeup(t):
-            await add_record(conn, GROUP_CHAT_ID, user.id, today_iso, hhmm)
-            await set_user_fields(conn, GROUP_CHAT_ID, user.id, streak=0, last_checkin=today_iso, last_time=hhmm, badge="")
-            await conn.execute("COMMIT")
-            await msg.reply_text(f"⚠️ {user.mention_html()} — wake-up {hhmm} outside 04:00–07:00. Streak reset to 0.", parse_mode=ParseMode.HTML)
+            await add_record(db, GROUP_CHAT_ID, user.id, today_iso, hhmm)
+            await set_user_fields(
+                db,
+                GROUP_CHAT_ID,
+                user.id,
+                streak=0,
+                last_checkin=today_iso,
+                last_time=hhmm,
+                badge=""
+            )
+            await db.commit()
+
+            await msg.reply_text(
+                f"⚠️ {user.mention_html()} — wake-up <b>{hhmm}</b> is outside 04:00–07:00 AM.\n"
+                f"Streak reset to <b>0</b>.",
+                parse_mode=ParseMode.HTML
+            )
             return
-        row = await get_user(conn, GROUP_CHAT_ID, user.id)
-        prev_streak = row['streak'] if row else 0
+
+        # Valid checkin → update streak
+        row = await get_user(db, GROUP_CHAT_ID, user.id)
+        prev_streak = row[0] if row else 0
         new_streak = prev_streak + 1
         badge = badge_for_streak(new_streak) or ""
-        await add_record(conn, GROUP_CHAT_ID, user.id, today_iso, hhmm)
-        await set_user_fields(conn, GROUP_CHAT_ID, user.id, streak=new_streak, last_checkin=today_iso, last_time=hhmm, badge=badge)
-    await msg.reply_text(f"🔥 {user.mention_html()} — streak now <b>{new_streak}</b>. Wake-up: <b>{hhmm}</b>. Badge: <b>{badge or 'None'}</b>", parse_mode=ParseMode.HTML)
 
+        await add_record(db, GROUP_CHAT_ID, user.id, today_iso, hhmm)
+        await set_user_fields(
+            db,
+            GROUP_CHAT_ID,
+            user.id,
+            streak=new_streak,
+            last_checkin=today_iso,
+            last_time=hhmm,
+            badge=badge
+        )
+        await db.commit()
+
+        await msg.reply_text(
+            f"🔥 {user.mention_html()} — streak now <b>{new_streak}</b>\n"
+            f"Wake-up time: <b>{hhmm}</b>\n"
+            f"Badge: <b>{badge or 'None'}</b>",
+            parse_mode=ParseMode.HTML
+        )
 # ------------- Leaderboards & summaries -------------
 async def send_leaderboard(context: ContextTypes.DEFAULT_TYPE):
     async with db_pool.acquire() as conn:
