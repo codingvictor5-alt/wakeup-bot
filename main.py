@@ -55,6 +55,8 @@ WEEKLY_SUMMARY_DAY = int(os.environ.get("WEEKLY_SUMMARY_DAY", 6))  # Sunday=6
 WEEKLY_SUMMARY_HOUR = int(os.environ.get("WEEKLY_SUMMARY_HOUR", 6))
 LEADERBOARD_TOP = int(os.environ.get("LEADERBOARD_TOP", 5))
 BADGE_THRESHOLDS = [3, 7, 21]
+# Add this near the top with other globals
+ACTIVE_POLL_CHAT = {}  # Store poll_id -> chat_id mapping
 
 if not BOT_TOKEN:
     raise SystemExit("Error: BOT_TOKEN env var required.")
@@ -200,6 +202,13 @@ async def safe_send(bot, chat_id:int, *args, **kwargs):
         print("❌ send_message failed:", e)
         return None
 
+# Add this function
+async def cleanup_old_polls():
+    """Remove poll mappings older than 24 hours"""
+    # You'd need to track timestamps too, or just clear all daily
+    ACTIVE_POLL_CHAT.clear()
+
+# Call it in your daily leaderboard or as a separate daily job
 # ------------- Self-ping keepalive (for Render) -------------
 async def self_ping_task():
     if not RENDER_EXTERNAL_URL:
@@ -228,70 +237,144 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+
+
 async def send_wakeup_poll(context: ContextTypes.DEFAULT_TYPE):
-    chat_id = context.job.chat_id
+    chat_id = GROUP_CHAT_ID  # Use the global GROUP_CHAT_ID
     bot = context.bot
+    
     async with db_pool.acquire() as conn:
         # Generate tagging text
         tags_text = await tag_all_users(conn, bot, chat_id)
 
         poll_message = await bot.send_poll(
             chat_id=chat_id,
-            question="🌅 Good morning! Did you wake up on time today between 4.00 A.M and 7.00 A.M?",
+            question="🌅 Good morning! Did you wake up on time today between 4:00 AM and 7:00 AM?",
             options=["Yes, I woke up!", "No, I overslept 😴"],
             is_anonymous=False,
             allows_multiple_answers=False,
         )
 
+        # Store the poll_id -> chat_id mapping
+        ACTIVE_POLL_CHAT[poll_message.poll.id] = chat_id
+
         # Pin poll
         try:
-            await bot.pin_chat_message(chat_id=chat_id, message_id=poll_message.message_id, disable_notification=True)
+            await bot.pin_chat_message(
+                chat_id=chat_id, 
+                message_id=poll_message.message_id, 
+                disable_notification=True
+            )
         except Exception as e:
             print("Failed to pin poll:", e)
 
         # Send tagging message right after poll to alert everyone
         try:
-            await bot.send_message(chat_id=chat_id, text=f"{tags_text}\nPlease vote in the poll above!", parse_mode="HTML")
+            await bot.send_message(
+                chat_id=chat_id, 
+                text=f"{tags_text}\n\nPlease vote in the poll above!", 
+                parse_mode="HTML"
+            )
         except Exception as e:
             print("Failed to send tagging message:", e)
 
 
-
 async def poll_answer_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle poll answers and update streaks accordingly."""
     answer = update.poll_answer
     user_id = answer.user.id
-    chat_id = update.effective_chat.id if update.effective_chat else None
-
+    poll_id = answer.poll_id
+    
+    # Get the chat_id from our stored mapping
+    chat_id = ACTIVE_POLL_CHAT.get(poll_id)
+    
     if chat_id is None:
+        print(f"⚠️ Poll answer received for unknown poll_id: {poll_id}")
         return
-
+    
     # Determine if user voted "Yes" (first option)
-    option_index = answer.option_ids[0] if answer.option_ids else None
-    voted_yes = option_index == 0
-
+    if not answer.option_ids:
+        return
+    
+    option_index = answer.option_ids[0]
+    voted_yes = (option_index == 0)
+    
+    today = datetime.now(TZ).date().isoformat()
+    current_time = datetime.now(TZ).strftime("%H:%M")
+    
     async with db_pool.acquire() as conn:
-        today = datetime.now().date().isoformat()
         # Ensure user row exists
-        await conn.execute(
-            "INSERT INTO users(chat_id, user_id, streak, last_checkin, last_time, badge) VALUES ($1,$2,0,'','', '') ON CONFLICT DO NOTHING",
-            chat_id, user_id
-        )
-
+        await ensure_user_row(conn, chat_id, user_id)
+        
+        # Check if already checked in today via poll
+        already_voted = await user_checked_today(conn, chat_id, user_id, today)
+        
+        if already_voted:
+            # User already voted today, ignore duplicate votes
+            print(f"ℹ️ User {user_id} already voted today")
+            return
+        
         if voted_yes:
-            # Increase streak by 1
-            row = await conn.fetchrow("SELECT streak FROM users WHERE chat_id=$1 AND user_id=$2", chat_id, user_id)
-            new_streak = (row['streak'] or 0) + 1
-            await conn.execute(
-                "UPDATE users SET streak=$1, last_checkin=$2, last_time=$3 WHERE chat_id=$4 AND user_id=$5",
-                new_streak, today, datetime.now().strftime("%H:%M"), chat_id, user_id
+            # Get current streak
+            row = await get_user(conn, chat_id, user_id)
+            current_streak = row['streak'] if row else 0
+            new_streak = current_streak + 1
+            badge = badge_for_streak(new_streak) or ""
+            
+            # Update user stats
+            await set_user_fields(
+                conn, chat_id, user_id,
+                streak=new_streak,
+                last_checkin=today,
+                last_time=current_time,
+                badge=badge
             )
+            
+            # Add record
+            await add_record(conn, chat_id, user_id, today, current_time)
+            
+            # Send congratulations message
+            try:
+                user = await context.bot.get_chat_member(chat_id, user_id)
+                mention = user.user.mention_html()
+                
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text=(
+                        f"🎉 {mention} woke up on time!\n"
+                        f"🔥 Streak: <b>{new_streak}</b> days\n"
+                        f"🏅 Badge: <b>{badge or 'None'}</b>"
+                    ),
+                    parse_mode=ParseMode.HTML
+                )
+            except Exception as e:
+                print(f"Failed to send success message: {e}")
+                
         else:
-            # Reset streak
-            await conn.execute(
-                "UPDATE users SET streak=0, last_checkin=$1, last_time=$2 WHERE chat_id=$3 AND user_id=$4",
-                today, datetime.now().strftime("%H:%M"), chat_id, user_id
+            # User overslept - reset streak
+            await set_user_fields(
+                conn, chat_id, user_id,
+                streak=0,
+                last_checkin=today,
+                last_time=current_time,
+                badge=""
             )
-
+            
+            # Still add a record (optional - you can remove this if you don't want to track oversleeps)
+            await add_record(conn, chat_id, user_id, today, "overslept")
+            
+            # Send reset message
+            try:
+                user = await context.bot.get_chat_member(chat_id, user_id)
+                mention = user.user.mention_html()
+                
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text=f"😴 {mention} overslept today. Streak reset to 0.",
+                    parse_mode=ParseMode.HTML
+                )
+            except Exception as e:
+                print(f"Failed to send reset message: {e}")
 
 
 async def reset_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -584,7 +667,7 @@ async def main():
             jq.run_daily(lambda ctx: asyncio.create_task(send_leaderboard(ctx)), time=time(LEADERBOARD_HOUR,0,tzinfo=TZ))
             jq.run_daily(lambda ctx: asyncio.create_task(send_bedtime_reminder(ctx)), time=time(BEDTIME_HOUR, BEDTIME_MINUTE,tzinfo=TZ))
             jq.run_daily(lambda ctx: asyncio.create_task(send_weekly_summary(ctx)), time=time(WEEKLY_SUMMARY_HOUR,0,tzinfo=TZ))
-            jq.run_daily(lambda ctx: asyncio.create_task(send_wakeup_poll(ctx)),time=time(0,53, tzinfo=TZ))
+            jq.run_daily(send_wakeup_poll, time=time(1,18, tzinfo=TZ), chat_id=GROUP_CHAT_ID, name="wakeup_poll")
             jq.run_repeating(lambda c: asyncio.create_task(send_motivation(c)), interval=9000, first=0)
             print("✅ JobQueue scheduled tasks registered.")
         except Exception as e:
@@ -597,7 +680,7 @@ async def main():
         asyncio.create_task(fallback_daily_runner(send_leaderboard, LEADERBOARD_HOUR, 0, ctx=None))
         asyncio.create_task(fallback_daily_runner(send_bedtime_reminder, BEDTIME_HOUR,  BEDTIME_MINUTE, ctx=None))
         asyncio.create_task(fallback_daily_runner(send_weekly_summary, WEEKLY_SUMMARY_HOUR, 0, ctx=None))
-        asyncio.create_task(fallback_daily_runner(send_wakeup_poll, 0 ,53, ctx=None))
+        asyncio.create_task(fallback_daily_runner(send_wakeup_poll, 1 ,18, ctx=None))
         asyncio.create_task(fallback_hourly_runner(send_motivation))
         if RENDER_EXTERNAL_URL: asyncio.create_task(self_ping_task())
         print("ℹ️ Fallback scheduler running for daily jobs.")
