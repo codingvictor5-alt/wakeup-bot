@@ -13,8 +13,10 @@ import statistics
 from typing import Optional, List, Tuple, Dict, Any
 from collections import defaultdict
 from telegram import Poll, Update
+from telegram import PollAnswer
 from telegram.ext import ContextTypes
-from tagger import tag_all_users
+from morningtag import tag_all_users
+from telegram.ext import PollAnswerHandler
 
 
 from dotenv import load_dotenv
@@ -254,6 +256,38 @@ async def send_wakeup_poll(context: ContextTypes.DEFAULT_TYPE):
             await bot.send_message(chat_id=chat_id, text=f"{tags_text}\nPlease vote in the poll above!", parse_mode="HTML")
         except Exception as e:
             print("Failed to send tagging message:", e)
+
+
+
+
+async def poll_answer_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    answer: PollAnswer = update.poll_answer
+    user_id = answer.user.id
+    chat_id = update.effective_chat.id if update.effective_chat else None
+
+    # Check which option was selected
+    option_index = answer.option_ids[0] if answer.option_ids else None
+    wake_up = option_index == 0  # "Yes" is first option
+
+    from main import db_pool
+    from datetime import datetime
+
+    async with db_pool.acquire() as conn:
+        today = datetime.now().date().isoformat()
+        # Record only if user voted Yes
+        if wake_up:
+            # Ensure user row exists
+            await conn.execute(
+                "INSERT INTO users(chat_id, user_id, streak, last_checkin, last_time, badge) VALUES ($1,$2,0,'','', '') ON CONFLICT DO NOTHING",
+                chat_id, user_id
+            )
+            # Add a record for today (time can be poll submission time)
+            hhmm = datetime.now().strftime("%H:%M")
+            await conn.execute(
+                "INSERT INTO records(chat_id, user_id, date, time) VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING",
+                chat_id, user_id, today, hhmm
+            )
+
 
 async def reset_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != GROUP_CHAT_ID: return
@@ -533,6 +567,8 @@ async def main():
     # Also accept plain "checkin" without slash (privacy may block plain messages unless disabled)
     app.add_handler(MessageHandler(filters.Regex(r'(?i)^checkin($|\s+)'), checkin_handler))
     app.add_handler(CommandHandler("motivate", motivate_command))
+    app.add_handler(PollAnswerHandler(poll_answer_handler))
+
 
     app.add_error_handler(error_handler)
 
@@ -543,6 +579,7 @@ async def main():
             jq.run_daily(lambda ctx: asyncio.create_task(send_leaderboard(ctx)), time=time(LEADERBOARD_HOUR,0,tzinfo=TZ))
             jq.run_daily(lambda ctx: asyncio.create_task(send_bedtime_reminder(ctx)), time=time(BEDTIME_HOUR, BEDTIME_MINUTE,tzinfo=TZ))
             jq.run_daily(lambda ctx: asyncio.create_task(send_weekly_summary(ctx)), time=time(WEEKLY_SUMMARY_HOUR,0,tzinfo=TZ))
+            jq.run_daily(lambda ctx: asyncio.create_task(send_wakeup_poll(ctx)),time=time(5, 0, tzinfo=TZ))
             jq.run_repeating(lambda c: asyncio.create_task(send_motivation(c)), interval=9000, first=0)
             print("✅ JobQueue scheduled tasks registered.")
         except Exception as e:
@@ -555,6 +592,7 @@ async def main():
         asyncio.create_task(fallback_daily_runner(send_leaderboard, LEADERBOARD_HOUR, 0, ctx=None))
         asyncio.create_task(fallback_daily_runner(send_bedtime_reminder, BEDTIME_HOUR,  BEDTIME_MINUTE, ctx=None))
         asyncio.create_task(fallback_daily_runner(send_weekly_summary, WEEKLY_SUMMARY_HOUR, 0, ctx=None))
+        asyncio.create_task(fallback_daily_runner(send_wakeup_poll, 5 , 0, ctx=None))
         asyncio.create_task(fallback_hourly_runner(send_motivation))
         if RENDER_EXTERNAL_URL: asyncio.create_task(self_ping_task())
         print("ℹ️ Fallback scheduler running for daily jobs.")
