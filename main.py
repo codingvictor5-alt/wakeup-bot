@@ -480,7 +480,7 @@ async def fallback_hourly_runner(func,ctx=None):
     while True:
         try: await func(ctx) if ctx else await func(None)
         except Exception as e: print("❌ hourly fallback error:",e)
-        await asyncio.sleep(3600)
+        await asyncio.sleep(9000)
 
 # ------------- App setup & main -------------
 async def main():
