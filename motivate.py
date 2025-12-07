@@ -69,7 +69,7 @@ async def motivate_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def send_motivation(context: ContextTypes.DEFAULT_TYPE):
     """Automatic hourly quote sender."""
     quote = random.choice(QUOTES)
-    text = f"💡 <b>Hourly Motivation:</b>\n{quote}"
+    text = f"💡 <b>Motivation:</b>\n{quote}"
 
     await safe_send(context.bot, GROUP_CHAT_ID, text, parse_mode=ParseMode.HTML)
     print(f"[{datetime.now()}] Sent hourly motivation.")
