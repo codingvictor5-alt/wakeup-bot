@@ -12,6 +12,10 @@ from zoneinfo import ZoneInfo
 import statistics
 from typing import Optional, List, Tuple, Dict, Any
 from collections import defaultdict
+from telegram import Poll, Update
+from telegram.ext import ContextTypes
+from tagger import tag_all_users
+
 
 from dotenv import load_dotenv
 from motivate import send_motivation,motivate_command
@@ -23,7 +27,7 @@ import asyncpg
 import aiohttp
 
 # Telegram
-from telegram import Update
+
 from telegram.constants import ParseMode
 from telegram.ext import (
     ApplicationBuilder,
@@ -32,6 +36,8 @@ from telegram.ext import (
     ContextTypes,
     filters,
 )
+
+
 
 # ------------- CONFIG -------------
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -218,6 +224,36 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "👋 Wakeup Bot ready!\nCommands:\n(checkin) or /checkin, /mystats, /leaderboard, /reset, /setstreak <n>"
     )
+
+
+async def send_wakeup_poll(context: ContextTypes.DEFAULT_TYPE):
+    chat_id = context.job.chat_id
+    bot = context.bot
+    from main import db_pool  # your existing asyncpg pool
+
+    async with db_pool.acquire() as conn:
+        # Generate tagging text
+        tags_text = await tag_all_users(conn, bot, chat_id)
+
+        poll_message = await bot.send_poll(
+            chat_id=chat_id,
+            question="🌅 Good morning! Did you wake up on time today?",
+            options=["Yes, I woke up!", "No, I overslept 😴"],
+            is_anonymous=False,
+            allows_multiple_answers=False,
+        )
+
+        # Pin poll
+        try:
+            await bot.pin_chat_message(chat_id=chat_id, message_id=poll_message.message_id, disable_notification=True)
+        except Exception as e:
+            print("Failed to pin poll:", e)
+
+        # Send tagging message right after poll to alert everyone
+        try:
+            await bot.send_message(chat_id=chat_id, text=f"{tags_text}\nPlease vote in the poll above!", parse_mode="HTML")
+        except Exception as e:
+            print("Failed to send tagging message:", e)
 
 async def reset_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.id != GROUP_CHAT_ID: return
