@@ -231,8 +231,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def send_wakeup_poll(context: ContextTypes.DEFAULT_TYPE):
     chat_id = context.job.chat_id
     bot = context.bot
-    from main import db_pool  # your existing asyncpg pool
-
     async with db_pool.acquire() as conn:
         # Generate tagging text
         tags_text = await tag_all_users(conn, bot, chat_id)
@@ -268,10 +266,6 @@ async def poll_answer_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
     # Check which option was selected
     option_index = answer.option_ids[0] if answer.option_ids else None
     wake_up = option_index == 0  # "Yes" is first option
-
-    from main import db_pool
-    from datetime import datetime
-
     async with db_pool.acquire() as conn:
         today = datetime.now().date().isoformat()
         # Record only if user voted Yes
