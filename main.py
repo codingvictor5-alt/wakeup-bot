@@ -80,6 +80,7 @@ CREATE TABLE IF NOT EXISTS records (
     date TEXT,
     time TEXT
 );
+
 CREATE INDEX IF NOT EXISTS idx_records_chat_date ON records(chat_id, date);
 """
 
@@ -98,6 +99,41 @@ async def ensure_user_row(conn, chat_id: int, user_id: int):
            VALUES ($1,$2,0,'','', '') ON CONFLICT DO NOTHING""",
         chat_id, user_id
     )
+def parse_time_string(s: str):
+    """
+    Parse time formats like:
+    - "5"
+    - "5:30"
+    - "5.30"
+    - "05:7"
+    Returns datetime.time or None if invalid.
+    """
+    s = s.strip().lower().replace("am", "").replace("pm", "")  # strip unused
+
+    # Replace "." with ":" for convenience
+    s = s.replace(".", ":")
+
+    parts = s.split(":")
+    try:
+        if len(parts) == 1:
+            # "5" → 5:00
+            hour = int(parts[0])
+            minute = 0
+        elif len(parts) == 2:
+            # "5:30"
+            hour = int(parts[0])
+            minute = int(parts[1])
+        else:
+            return None
+
+        if 0 <= hour <= 23 and 0 <= minute <= 59:
+            return time(hour, minute)
+
+    except:
+        return None
+
+    return None
+
 
 async def get_user(conn, chat_id:int, user_id:int):
     return await conn.fetchrow("SELECT streak, last_checkin, last_time, badge FROM users WHERE chat_id=$1 AND user_id=$2", chat_id, user_id)
@@ -138,20 +174,31 @@ async def get_records_between(conn, chat_id:int, start_date:str, end_date:str):
     return [(r['user_id'], r['date'], r['time']) for r in rows]
 
 # ------------- Utilities -------------
-def parse_time_string(s: str) -> Optional[time]:
-    s = s.replace(".", ":").strip()
-    for fmt in ("%H:%M", "%I:%M", "%H"):
-        try:
-            dt = datetime.strptime(s, fmt)
-            return dt.time()
-        except Exception:
-            continue
-    try:
+def parse_time_string(s: str):
+    s = s.strip()
+
+    # Format: "5" → 5:00
+    if s.isdigit():
         h = int(s)
         if 0 <= h <= 23:
-            return time(h,0)
-    except Exception:
-        pass
+            return time(h, 0)
+        return None
+
+    # Replace "." with ":" for flexibility
+    s = s.replace(".", ":")
+
+    # Format: "5:30"
+    try:
+        parts = s.split(":")
+        if len(parts) != 2:
+            return None
+        h = int(parts[0])
+        m = int(parts[1])
+        if 0 <= h <= 23 and 0 <= m <= 59:
+            return time(h, m)
+    except:
+        return None
+
     return None
 
 def valid_wakeup(t: time) -> bool:
@@ -268,93 +315,92 @@ async def checkin_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     parts = msg.text.strip().split()
 
-    # ---- NEW: Enforce format and show instructions ----
+    # Must include time argument
     if len(parts) < 2:
         await msg.reply_text(
-            "⛔ <b>Check-in format incorrect!</b>\n\n"
-            "You must enter wake-up time.\n\n"
-            "✅ <b>Correct Format:</b>\n"
-            "<code>/checkin HH:MM</code>\n\n"
-            "📝 <b>Example:</b>\n"
-            "<code>/checkin 5:32</code>\n\n"
-            "⚠️ <b>Important:</b>\n"
-            "Your streak increases ONLY when wake-up time is between <b>04:00 AM</b> and <b>07:00 AM</b>.\n"
-            "Outside this range → streak resets to 0.",
+            "❗ <b>Invalid format</b>\n\n"
+            "Use:\n"
+            "👉 <code>/checkin 5</code>\n"
+            "👉 <code>/checkin 5.30</code>\n"
+            "👉 <code>/checkin 5:30</code>\n\n"
+            "⏰ <b>IMPORTANT:</b>\n"
+            "• Streak is counted only if wake-up time is between <b>4:00 AM and 7:00 AM</b>.\n"
+            "• You can check in only <b>once per day</b>.",
+            parse_mode=ParseMode.HTML
+        )
+        return
+
+    # Parse time (supports 5, 5.30, 5:30 etc.)
+    raw_time = parts[1]
+    t = parse_time_string(raw_time)
+
+    if not t:
+        await msg.reply_text(
+            "❗ <b>Invalid time format</b>\n\n"
+            "Use:\n"
+            "👉 <code>/checkin 5</code>\n"
+            "👉 <code>/checkin 5.30</code>\n"
+            "👉 <code>/checkin 5:30</code>\n\n"
+            "⏰ <b>Streak only counts between 4 AM and 7 AM</b>.",
             parse_mode=ParseMode.HTML
         )
         return
 
     today_iso = datetime.now(TZ).date().isoformat()
+    hhmm = t.strftime("%H:%M")
 
     async with aiosqlite.connect(DB_FILE) as db:
+
         # Ensure user row exists
         await ensure_user_row(db, GROUP_CHAT_ID, user.id)
 
-        # Check if user already checked-in today
+        # Check if already checked in today
         if await user_checked_today(db, GROUP_CHAT_ID, user.id, today_iso):
             await msg.reply_text(
-                f"⛔ {user.mention_html()}, you have already checked in today.",
+                f"⛔ {user.mention_html()} you have already used your valid check-in for today.\n"
+                "You can check in only <b>once per day</b>.",
                 parse_mode=ParseMode.HTML
             )
             return
 
-        # Parse the HH:MM time provided
-        t = parse_time_string(parts[1])
-        if not t:
-            await msg.reply_text(
-                "⛔ Invalid time format.\n"
-                "Use <code>HH:MM</code> (Example: <code>5:32</code>)",
-                parse_mode=ParseMode.HTML
-            )
-            return
-
-        hhmm = t.strftime("%H:%M")
-
-        # ---- Normal logic unchanged ----
+        # If outside 4–7 AM → record + reset
         if not valid_wakeup(t):
             await add_record(db, GROUP_CHAT_ID, user.id, today_iso, hhmm)
-            await set_user_fields(
-                db,
-                GROUP_CHAT_ID,
-                user.id,
-                streak=0,
-                last_checkin=today_iso,
-                last_time=hhmm,
-                badge=""
-            )
+            await set_user_fields(db, GROUP_CHAT_ID, user.id,
+                                  streak=0, last_checkin=today_iso,
+                                  last_time=hhmm, badge="")
             await db.commit()
 
             await msg.reply_text(
-                f"⚠️ {user.mention_html()} — wake-up <b>{hhmm}</b> is outside 04:00–07:00 AM.\n"
-                f"Streak reset to <b>0</b>.",
+                f"⚠️ {user.mention_html()} — wake-up <b>{hhmm}</b> is outside 04:00–07:00.\n"
+                "Your streak has been <b>reset to 0</b>.",
                 parse_mode=ParseMode.HTML
             )
             return
 
-        # Valid checkin → update streak
+        # Valid check-in
         row = await get_user(db, GROUP_CHAT_ID, user.id)
         prev_streak = row[0] if row else 0
+
         new_streak = prev_streak + 1
         badge = badge_for_streak(new_streak) or ""
 
         await add_record(db, GROUP_CHAT_ID, user.id, today_iso, hhmm)
-        await set_user_fields(
-            db,
-            GROUP_CHAT_ID,
-            user.id,
-            streak=new_streak,
-            last_checkin=today_iso,
-            last_time=hhmm,
-            badge=badge
-        )
+        await set_user_fields(db, GROUP_CHAT_ID, user.id,
+                              streak=new_streak,
+                              last_checkin=today_iso,
+                              last_time=hhmm,
+                              badge=badge)
         await db.commit()
 
         await msg.reply_text(
             f"🔥 {user.mention_html()} — streak now <b>{new_streak}</b>\n"
-            f"Wake-up time: <b>{hhmm}</b>\n"
-            f"Badge: <b>{badge or 'None'}</b>",
+            f"⏰ Wake-up time: <b>{hhmm}</b>\n"
+            f"🏅 Badge: <b>{badge or 'None'}</b>",
             parse_mode=ParseMode.HTML
         )
+
+
 # ------------- Leaderboards & summaries -------------
 async def send_leaderboard(context: ContextTypes.DEFAULT_TYPE):
     async with db_pool.acquire() as conn:
