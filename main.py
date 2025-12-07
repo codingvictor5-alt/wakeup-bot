@@ -314,13 +314,13 @@ async def checkin_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     today_iso = datetime.now(TZ).date().isoformat()
     hhmm = t.strftime("%H:%M")
 
-    async with aiosqlite.connect(DB_FILE) as db:
+    async with db_pool.acquire() as conn:
 
         # Ensure user row exists
-        await ensure_user_row(db, GROUP_CHAT_ID, user.id)
+        await ensure_user_row(conn, GROUP_CHAT_ID, user.id)
 
         # Check if already checked in today
-        if await user_checked_today(db, GROUP_CHAT_ID, user.id, today_iso):
+        if await user_checked_today(conn, GROUP_CHAT_ID, user.id, today_iso):
             await msg.reply_text(
                 f"⛔ {user.mention_html()} you have already used your valid check-in for today.\n"
                 "You can check in only <b>once per day</b>.",
@@ -330,11 +330,9 @@ async def checkin_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # If outside 4–7 AM → record + reset
         if not valid_wakeup(t):
-            await add_record(db, GROUP_CHAT_ID, user.id, today_iso, hhmm)
-            await set_user_fields(db, GROUP_CHAT_ID, user.id,
-                                  streak=0, last_checkin=today_iso,
-                                  last_time=hhmm, badge="")
-            await db.commit()
+            await add_record(conn, GROUP_CHAT_ID, user.id, today_iso, hhmm)
+            await set_user_fields(conn, GROUP_CHAT_ID , user.id,streak=0, last_checkin=today_iso,last_time=hhmm, badge="")
+            await conn.execute("COMMIT")
 
             await msg.reply_text(
                 f"⚠️ {user.mention_html()} — wake-up <b>{hhmm}</b> is outside 04:00–07:00.\n"
@@ -344,20 +342,18 @@ async def checkin_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         # Valid check-in
-        row = await get_user(db, GROUP_CHAT_ID, user.id)
-        prev_streak = row[0] if row else 0
+        row = await get_user(conn, GROUP_CHAT_ID, user.id)
+        prev_streak = row['streak'] if row else 0
 
         new_streak = prev_streak + 1
         badge = badge_for_streak(new_streak) or ""
 
-        await add_record(db, GROUP_CHAT_ID, user.id, today_iso, hhmm)
-        await set_user_fields(db, GROUP_CHAT_ID, user.id,
+        await add_record(conn, GROUP_CHAT_ID, user.id, today_iso, hhmm)
+        await set_user_fields(conn , GROUP_CHAT_ID, user.id,
                               streak=new_streak,
                               last_checkin=today_iso,
                               last_time=hhmm,
                               badge=badge)
-        await db.commit()
-
         await msg.reply_text(
             f"🔥 {user.mention_html()} — streak now <b>{new_streak}</b>\n"
             f"⏰ Wake-up time: <b>{hhmm}</b>\n"
