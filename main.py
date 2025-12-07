@@ -237,7 +237,7 @@ async def send_wakeup_poll(context: ContextTypes.DEFAULT_TYPE):
 
         poll_message = await bot.send_poll(
             chat_id=chat_id,
-            question="🌅 Good morning! Did you wake up on time today?",
+            question="🌅 Good morning! Did you wake up on time today between 4.00 A.M and 7.00 A.M?",
             options=["Yes, I woke up!", "No, I overslept 😴"],
             is_anonymous=False,
             allows_multiple_answers=False,
@@ -257,30 +257,41 @@ async def send_wakeup_poll(context: ContextTypes.DEFAULT_TYPE):
 
 
 
-
 async def poll_answer_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    answer: PollAnswer = update.poll_answer
+    answer = update.poll_answer
     user_id = answer.user.id
     chat_id = update.effective_chat.id if update.effective_chat else None
 
-    # Check which option was selected
+    if chat_id is None:
+        return
+
+    # Determine if user voted "Yes" (first option)
     option_index = answer.option_ids[0] if answer.option_ids else None
-    wake_up = option_index == 0  # "Yes" is first option
+    voted_yes = option_index == 0
+
     async with db_pool.acquire() as conn:
         today = datetime.now().date().isoformat()
-        # Record only if user voted Yes
-        if wake_up:
-            # Ensure user row exists
+        # Ensure user row exists
+        await conn.execute(
+            "INSERT INTO users(chat_id, user_id, streak, last_checkin, last_time, badge) VALUES ($1,$2,0,'','', '') ON CONFLICT DO NOTHING",
+            chat_id, user_id
+        )
+
+        if voted_yes:
+            # Increase streak by 1
+            row = await conn.fetchrow("SELECT streak FROM users WHERE chat_id=$1 AND user_id=$2", chat_id, user_id)
+            new_streak = (row['streak'] or 0) + 1
             await conn.execute(
-                "INSERT INTO users(chat_id, user_id, streak, last_checkin, last_time, badge) VALUES ($1,$2,0,'','', '') ON CONFLICT DO NOTHING",
-                chat_id, user_id
+                "UPDATE users SET streak=$1, last_checkin=$2, last_time=$3 WHERE chat_id=$4 AND user_id=$5",
+                new_streak, today, datetime.now().strftime("%H:%M"), chat_id, user_id
             )
-            # Add a record for today (time can be poll submission time)
-            hhmm = datetime.now().strftime("%H:%M")
+        else:
+            # Reset streak
             await conn.execute(
-                "INSERT INTO records(chat_id, user_id, date, time) VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING",
-                chat_id, user_id, today, hhmm
+                "UPDATE users SET streak=0, last_checkin=$1, last_time=$2 WHERE chat_id=$3 AND user_id=$4",
+                today, datetime.now().strftime("%H:%M"), chat_id, user_id
             )
+
 
 
 async def reset_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -573,7 +584,7 @@ async def main():
             jq.run_daily(lambda ctx: asyncio.create_task(send_leaderboard(ctx)), time=time(LEADERBOARD_HOUR,0,tzinfo=TZ))
             jq.run_daily(lambda ctx: asyncio.create_task(send_bedtime_reminder(ctx)), time=time(BEDTIME_HOUR, BEDTIME_MINUTE,tzinfo=TZ))
             jq.run_daily(lambda ctx: asyncio.create_task(send_weekly_summary(ctx)), time=time(WEEKLY_SUMMARY_HOUR,0,tzinfo=TZ))
-            jq.run_daily(lambda ctx: asyncio.create_task(send_wakeup_poll(ctx)),time=time(0,39, tzinfo=TZ))
+            jq.run_daily(lambda ctx: asyncio.create_task(send_wakeup_poll(ctx)),time=time(0,53, tzinfo=TZ))
             jq.run_repeating(lambda c: asyncio.create_task(send_motivation(c)), interval=9000, first=0)
             print("✅ JobQueue scheduled tasks registered.")
         except Exception as e:
@@ -586,7 +597,7 @@ async def main():
         asyncio.create_task(fallback_daily_runner(send_leaderboard, LEADERBOARD_HOUR, 0, ctx=None))
         asyncio.create_task(fallback_daily_runner(send_bedtime_reminder, BEDTIME_HOUR,  BEDTIME_MINUTE, ctx=None))
         asyncio.create_task(fallback_daily_runner(send_weekly_summary, WEEKLY_SUMMARY_HOUR, 0, ctx=None))
-        asyncio.create_task(fallback_daily_runner(send_wakeup_poll, 0 ,39, ctx=None))
+        asyncio.create_task(fallback_daily_runner(send_wakeup_poll, 0 ,53, ctx=None))
         asyncio.create_task(fallback_hourly_runner(send_motivation))
         if RENDER_EXTERNAL_URL: asyncio.create_task(self_ping_task())
         print("ℹ️ Fallback scheduler running for daily jobs.")
