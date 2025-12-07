@@ -559,20 +559,22 @@ async def send_leaderboard(context: ContextTypes.DEFAULT_TYPE):
     await safe_send(context.bot, GROUP_CHAT_ID, f"{streak_text}\n\n{early_text}", parse_mode=ParseMode.HTML)
 
 async def send_bedtime_reminder(context: ContextTypes.DEFAULT_TYPE):
-    tags = await generate_mentions(context)
-
-    text = (
+    chat_id = GROUP_CHAT_ID  # Use the global GROUP_CHAT_ID
+    bot = context.bot
+    async with db_pool.acquire() as conn:
+        # Generate tagging text
+        tags_text = await tag_all_users(conn, bot, chat_id)
+        text = (
         "🌙 <b>Bedtime Reminder</b>\n"
         "Wind down and protect your streak!\n\n"
-        f"{tags}"
-    )
-
-    await safe_send(
+        f"{tags_text}"
+        )
+        await safe_send(
         context.bot,
         GROUP_CHAT_ID,
         text,
         parse_mode=ParseMode.HTML
-    )
+        )
 
 
 async def send_weekly_summary(context: ContextTypes.DEFAULT_TYPE):
@@ -667,7 +669,7 @@ async def main():
             jq.run_daily(lambda ctx: asyncio.create_task(send_leaderboard(ctx)), time=time(LEADERBOARD_HOUR,0,tzinfo=TZ))
             jq.run_daily(lambda ctx: asyncio.create_task(send_bedtime_reminder(ctx)), time=time(BEDTIME_HOUR, BEDTIME_MINUTE,tzinfo=TZ))
             jq.run_daily(lambda ctx: asyncio.create_task(send_weekly_summary(ctx)), time=time(WEEKLY_SUMMARY_HOUR,0,tzinfo=TZ))
-            jq.run_daily(send_wakeup_poll, time=time(1,18, tzinfo=TZ), chat_id=GROUP_CHAT_ID, name="wakeup_poll")
+            jq.run_daily(send_wakeup_poll, time=time(5,0, tzinfo=TZ), chat_id=GROUP_CHAT_ID, name="wakeup_poll")
             jq.run_repeating(lambda c: asyncio.create_task(send_motivation(c)), interval=9000, first=0)
             print("✅ JobQueue scheduled tasks registered.")
         except Exception as e:
@@ -680,7 +682,7 @@ async def main():
         asyncio.create_task(fallback_daily_runner(send_leaderboard, LEADERBOARD_HOUR, 0, ctx=None))
         asyncio.create_task(fallback_daily_runner(send_bedtime_reminder, BEDTIME_HOUR,  BEDTIME_MINUTE, ctx=None))
         asyncio.create_task(fallback_daily_runner(send_weekly_summary, WEEKLY_SUMMARY_HOUR, 0, ctx=None))
-        asyncio.create_task(fallback_daily_runner(send_wakeup_poll, 1 ,18, ctx=None))
+        asyncio.create_task(fallback_daily_runner(send_wakeup_poll, 5 ,0, ctx=None))
         asyncio.create_task(fallback_hourly_runner(send_motivation))
         if RENDER_EXTERNAL_URL: asyncio.create_task(self_ping_task())
         print("ℹ️ Fallback scheduler running for daily jobs.")
