@@ -41,8 +41,8 @@ RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL")  # e.g. https://your-serv
 TZ = ZoneInfo("Asia/Kolkata")
 
 LEADERBOARD_HOUR = int(os.environ.get("LEADERBOARD_HOUR", 5))
-BEDTIME_HOUR = int(os.environ.get("BEDTIME_HOUR", 23))
-BEDTIME_MINUTE = int(os.environ.get("BEDTIME_MINUTE", 33))
+BEDTIME_HOUR = int(os.environ.get("BEDTIME_HOUR", 21))
+BEDTIME_MINUTE = int(os.environ.get("BEDTIME_MINUTE", 0O))
 WEEKLY_SUMMARY_DAY = int(os.environ.get("WEEKLY_SUMMARY_DAY", 6))  # Sunday=6
 WEEKLY_SUMMARY_HOUR = int(os.environ.get("WEEKLY_SUMMARY_HOUR", 6))
 LEADERBOARD_TOP = int(os.environ.get("LEADERBOARD_TOP", 5))
