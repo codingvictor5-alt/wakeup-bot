@@ -180,12 +180,26 @@ def valid_wakeup(t: time) -> bool:
     return time(4,0) <= t <= time(7,0)
 
 def average_time_str(times: List[str]) -> str:
-    if not times: return "N/A"
-    mins = []
+    """Calculate average time, filtering out non-time values like 'poll_vote', 'overslept', 'reset'"""
+    if not times:
+        return "N/A"
+    
+    valid_times = []
     for t in times:
-        h,m = map(int, t.split(":"))
-        mins.append(h*60 + m)
-    avg = int(statistics.mean(mins))
+        # Skip special markers
+        if t in ['poll_vote', 'overslept', 'reset']:
+            continue
+        try:
+            h, m = map(int, t.split(":"))
+            valid_times.append(h * 60 + m)
+        except:
+            # Skip malformed times
+            continue
+    
+    if not valid_times:
+        return "N/A"
+    
+    avg = int(statistics.mean(valid_times))
     return f"{avg//60:02d}:{avg%60:02d}"
 
 def badge_for_streak(streak:int) -> Optional[str]:
@@ -205,10 +219,8 @@ async def safe_send(bot, chat_id:int, *args, **kwargs):
 # Add this function
 async def cleanup_old_polls():
     """Remove poll mappings older than 24 hours"""
-    # You'd need to track timestamps too, or just clear all daily
     ACTIVE_POLL_CHAT.clear()
 
-# Call it in your daily leaderboard or as a separate daily job
 # ------------- Self-ping keepalive (for Render) -------------
 async def self_ping_task():
     if not RENDER_EXTERNAL_URL:
@@ -300,18 +312,31 @@ async def poll_answer_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
     voted_yes = (option_index == 0)
     
     today = datetime.now(TZ).date().isoformat()
-    current_time = datetime.now(TZ).strftime("%H:%M")
     
     async with db_pool.acquire() as conn:
         # Ensure user row exists
         await ensure_user_row(conn, chat_id, user_id)
         
-        # Check if already checked in today via poll
-        already_voted = await user_checked_today(conn, chat_id, user_id, today)
+        # Check if user already did MANUAL checkin today (not poll)
+        manual_checkin = await conn.fetchrow(
+            "SELECT 1 FROM records WHERE chat_id=$1 AND user_id=$2 AND date=$3 AND time != 'poll_vote' AND time != 'overslept' LIMIT 1",
+            chat_id, user_id, today
+        )
         
-        if already_voted:
+        if manual_checkin:
+            # User already did manual checkin, ignore poll vote
+            print(f"ℹ️ User {user_id} already did manual checkin today, ignoring poll")
+            return
+        
+        # Check if already voted in poll today
+        poll_vote_exists = await conn.fetchrow(
+            "SELECT 1 FROM records WHERE chat_id=$1 AND user_id=$2 AND date=$3 AND time = 'poll_vote' LIMIT 1",
+            chat_id, user_id, today
+        )
+        
+        if poll_vote_exists:
             # User already voted today, ignore duplicate votes
-            print(f"ℹ️ User {user_id} already voted today")
+            print(f"ℹ️ User {user_id} already voted in poll today")
             return
         
         if voted_yes:
@@ -321,17 +346,17 @@ async def poll_answer_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
             new_streak = current_streak + 1
             badge = badge_for_streak(new_streak) or ""
             
-            # Update user stats
+            # Update user stats with "poll_vote" marker
             await set_user_fields(
                 conn, chat_id, user_id,
                 streak=new_streak,
                 last_checkin=today,
-                last_time=current_time,
+                last_time="poll_vote",
                 badge=badge
             )
             
-            # Add record
-            await add_record(conn, chat_id, user_id, today, current_time)
+            # Add record with "poll_vote" marker
+            await add_record(conn, chat_id, user_id, today, "poll_vote")
             
             # Send congratulations message
             try:
@@ -343,7 +368,8 @@ async def poll_answer_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
                     text=(
                         f"🎉 {mention} woke up on time!\n"
                         f"🔥 Streak: <b>{new_streak}</b> days\n"
-                        f"🏅 Badge: <b>{badge or 'None'}</b>"
+                        f"🏅 Badge: <b>{badge or 'None'}</b>\n\n"
+                        f"💡 <i>You can still use /checkin with your exact wake-up time!</i>"
                     ),
                     parse_mode=ParseMode.HTML
                 )
@@ -356,11 +382,11 @@ async def poll_answer_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
                 conn, chat_id, user_id,
                 streak=0,
                 last_checkin=today,
-                last_time=current_time,
+                last_time="overslept",
                 badge=""
             )
             
-            # Still add a record (optional - you can remove this if you don't want to track oversleeps)
+            # Add oversleep record
             await add_record(conn, chat_id, user_id, today, "overslept")
             
             # Send reset message
@@ -416,7 +442,11 @@ async def mystats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     last_time = row['last_time'] or "N/A"
     badge = row['badge']
     avg = average_time_str(recs)
-    earliest = min(recs) if recs else "N/A"
+    
+    # Get earliest valid time (skip markers)
+    valid_times = [t for t in recs if t not in ['poll_vote', 'overslept', 'reset']]
+    earliest = min(valid_times) if valid_times else "N/A"
+    
     await update.message.reply_text(
         f"📊 <b>{user.full_name}'s Stats</b>\n"
         f"• Current streak: <b>{streak}</b>\n"
@@ -477,20 +507,30 @@ async def checkin_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Ensure user row exists
         await ensure_user_row(conn, GROUP_CHAT_ID, user.id)
 
-        # Check if already checked in today
-        if await user_checked_today(conn, GROUP_CHAT_ID, user.id, today_iso):
+        # Check if already did MANUAL checkin today (not poll)
+        manual_checkin = await conn.fetchrow(
+            "SELECT 1 FROM records WHERE chat_id=$1 AND user_id=$2 AND date=$3 AND time != 'poll_vote' AND time != 'overslept' LIMIT 1",
+            GROUP_CHAT_ID, user.id, today_iso
+        )
+        
+        if manual_checkin:
             await msg.reply_text(
-                f"⛔ {user.mention_html()} you have already used your valid check-in for today.\n"
+                f"⛔ {user.mention_html()} you have already used your manual check-in for today.\n"
                 "You can check in only <b>once per day</b>.",
                 parse_mode=ParseMode.HTML
             )
             return
 
+        # Delete any existing poll vote (we're replacing it)
+        await conn.execute(
+            "DELETE FROM records WHERE chat_id=$1 AND user_id=$2 AND date=$3 AND time = 'poll_vote'",
+            GROUP_CHAT_ID, user.id, today_iso
+        )
+
         # If outside 4–7 AM → record + reset
         if not valid_wakeup(t):
             await add_record(conn, GROUP_CHAT_ID, user.id, today_iso, hhmm)
             await set_user_fields(conn, GROUP_CHAT_ID , user.id,streak=0, last_checkin=today_iso,last_time=hhmm, badge="")
-            await conn.execute("COMMIT")
 
             await msg.reply_text(
                 f"⚠️ {user.mention_html()} — wake-up <b>{hhmm}</b> is outside 04:00–07:00.\n"
@@ -522,41 +562,58 @@ async def checkin_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ------------- Leaderboards & summaries -------------
 async def send_leaderboard(context: ContextTypes.DEFAULT_TYPE):
-    async with db_pool.acquire() as conn:
-        top_streaks = await get_top_streaks(conn, GROUP_CHAT_ID, LEADERBOARD_TOP)
-        recs = await conn.fetch("SELECT user_id, time FROM records WHERE chat_id=$1", GROUP_CHAT_ID)
-    # earliest risers by average
-    times_by_user = defaultdict(list)
-    for r in recs:
-        times_by_user[r['user_id']].append(r['time'])
-    avg_times = {}
-    for uid, times in times_by_user.items():
-        mins = [int(h)*60 + int(m) for h,m in (map(int, x.split(":")) for x in times)]
-        avg_times[uid] = sum(mins)//len(mins)
-    earliest = sorted(avg_times.items(), key=lambda x: x[1])[:LEADERBOARD_TOP]
+    try:
+        async with db_pool.acquire() as conn:
+            top_streaks = await get_top_streaks(conn, GROUP_CHAT_ID, LEADERBOARD_TOP)
+            recs = await conn.fetch("SELECT user_id, time FROM records WHERE chat_id=$1", GROUP_CHAT_ID)
+        
+        # earliest risers by average (filter out special markers)
+        times_by_user = defaultdict(list)
+        for r in recs:
+            # Skip special markers
+            if r['time'] in ['poll_vote', 'overslept', 'reset']:
+                continue
+            try:
+                # Validate it's a proper time format
+                h, m = map(int, r['time'].split(":"))
+                if 0 <= h <= 23 and 0 <= m <= 59:
+                    times_by_user[r['user_id']].append(r['time'])
+            except:
+                continue
+        
+        avg_times = {}
+        for uid, times in times_by_user.items():
+            if times:
+                mins = [int(h)*60 + int(m) for h,m in (map(int, x.split(":")) for x in times)]
+                avg_times[uid] = sum(mins)//len(mins)
+        
+        earliest = sorted(avg_times.items(), key=lambda x: x[1])[:LEADERBOARD_TOP]
 
-    # format
-    streak_lines = []
-    for i, (uid, streak, badge) in enumerate(top_streaks, 1):
-        try:
-            mention = (await context.bot.get_chat_member(GROUP_CHAT_ID, uid)).user.mention_html()
-        except:
-            mention = str(uid)
-        b = f" ({badge})" if badge else ""
-        streak_lines.append(f"{i}. {mention} — <b>{streak}</b> days{b}")
-    streak_text = "🏆 <b>Top Streaks</b>\n\n" + ("\n".join(streak_lines) if streak_lines else "No streaks yet.")
+        # format
+        streak_lines = []
+        for i, (uid, streak, badge) in enumerate(top_streaks, 1):
+            try:
+                mention = (await context.bot.get_chat_member(GROUP_CHAT_ID, uid)).user.mention_html()
+            except:
+                mention = str(uid)
+            b = f" ({badge})" if badge else ""
+            streak_lines.append(f"{i}. {mention} — <b>{streak}</b> days{b}")
+        streak_text = "🏆 <b>Top Streaks</b>\n\n" + ("\n".join(streak_lines) if streak_lines else "No streaks yet.")
 
-    early_lines = []
-    for i, (uid, mins) in enumerate(earliest, 1):
-        try:
-            mention = (await context.bot.get_chat_member(GROUP_CHAT_ID, uid)).user.mention_html()
-        except:
-            mention = str(uid)
-        h,m = divmod(mins, 60)
-        early_lines.append(f"{i}. {mention} — ⏰ <b>{h:02d}:{m:02d}</b>")
-    early_text = "🌅 <b>Earliest Risers (avg)</b>\n\n" + ("\n".join(early_lines) if early_lines else "No wake-up data yet.")
+        early_lines = []
+        for i, (uid, mins) in enumerate(earliest, 1):
+            try:
+                mention = (await context.bot.get_chat_member(GROUP_CHAT_ID, uid)).user.mention_html()
+            except:
+                mention = str(uid)
+            h,m = divmod(mins, 60)
+            early_lines.append(f"{i}. {mention} — ⏰ <b>{h:02d}:{m:02d}</b>")
+        early_text = "🌅 <b>Earliest Risers (avg)</b>\n\n" + ("\n".join(early_lines) if early_lines else "No wake-up data yet.")
 
-    await safe_send(context.bot, GROUP_CHAT_ID, f"{streak_text}\n\n{early_text}", parse_mode=ParseMode.HTML)
+        await safe_send(context.bot, GROUP_CHAT_ID, f"{streak_text}\n\n{early_text}", parse_mode=ParseMode.HTML)
+    except Exception as e:
+        print(f"❌ Error in send_leaderboard: {e}")
+        await safe_send(context.bot, GROUP_CHAT_ID, "⚠️ Error generating leaderboard. Please try again later.")
 
 async def send_bedtime_reminder(context: ContextTypes.DEFAULT_TYPE):
     chat_id = GROUP_CHAT_ID  # Use the global GROUP_CHAT_ID
@@ -583,7 +640,7 @@ async def send_weekly_summary(context: ContextTypes.DEFAULT_TYPE):
     async with db_pool.acquire() as conn:
         recs = await get_records_between(conn, GROUP_CHAT_ID, start.isoformat(), end.isoformat())
     if not recs:
-        await safe_send(None, GROUP_CHAT_ID, "📈 Weekly summary: no activity in last 7 days.")
+        await safe_send(context.bot, GROUP_CHAT_ID, "📈 Weekly summary: no activity in last 7 days.")
         return
     user_counts = defaultdict(int)
     user_times = defaultdict(list)
@@ -638,8 +695,10 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
 
 async def fallback_hourly_runner(func,ctx=None):
     while True:
-        try: await func(ctx) if ctx else await func(None)
-        except Exception as e: print("❌ hourly fallback error:",e)
+        try: 
+            await func(ctx) if ctx else await func(None)
+        except Exception as e: 
+            print("❌ hourly fallback error:",e)
         await asyncio.sleep(9000)
 
 # ------------- App setup & main -------------
@@ -652,7 +711,7 @@ async def main():
     app.add_handler(CommandHandler("reset", reset_cmd))
     app.add_handler(CommandHandler("setstreak", setstreak_cmd))
     app.add_handler(CommandHandler("mystats", mystats_cmd))
-    app.add_handler(CommandHandler("leaderboard", lambda u,c: asyncio.create_task(send_leaderboard(c))))
+    app.add_handler(CommandHandler("leaderboard", send_leaderboard))
     app.add_handler(CommandHandler("checkin", checkin_handler))
     # Also accept plain "checkin" without slash (privacy may block plain messages unless disabled)
     app.add_handler(MessageHandler(filters.Regex(r'(?i)^checkin($|\s+)'), checkin_handler))
@@ -666,11 +725,11 @@ async def main():
     jq = app.job_queue
     if jq:
         try:
-            jq.run_daily(lambda ctx: asyncio.create_task(send_leaderboard(ctx)), time=time(LEADERBOARD_HOUR,0,tzinfo=TZ))
-            jq.run_daily(lambda ctx: asyncio.create_task(send_bedtime_reminder(ctx)), time=time(BEDTIME_HOUR, BEDTIME_MINUTE,tzinfo=TZ))
-            jq.run_daily(lambda ctx: asyncio.create_task(send_weekly_summary(ctx)), time=time(WEEKLY_SUMMARY_HOUR,0,tzinfo=TZ))
+            jq.run_daily(send_leaderboard, time=time(LEADERBOARD_HOUR,0,tzinfo=TZ), chat_id=GROUP_CHAT_ID, name="daily_leaderboard")
+            jq.run_daily(send_bedtime_reminder, time=time(BEDTIME_HOUR, BEDTIME_MINUTE,tzinfo=TZ), chat_id=GROUP_CHAT_ID, name="bedtime_reminder")
+            jq.run_daily(send_weekly_summary, time=time(WEEKLY_SUMMARY_HOUR,0,tzinfo=TZ), chat_id=GROUP_CHAT_ID, name="weekly_summary")
             jq.run_daily(send_wakeup_poll, time=time(5,0, tzinfo=TZ), chat_id=GROUP_CHAT_ID, name="wakeup_poll")
-            jq.run_repeating(lambda c: asyncio.create_task(send_motivation(c)), interval=9000, first=0)
+            jq.run_repeating(send_motivation, interval=9000, first=0, chat_id=GROUP_CHAT_ID, name="hourly_motivation")
             print("✅ JobQueue scheduled tasks registered.")
         except Exception as e:
             print("⚠️ JobQueue scheduling failed, falling back:", e)
