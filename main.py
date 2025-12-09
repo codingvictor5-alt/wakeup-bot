@@ -53,8 +53,8 @@ BEDTIME_HOUR = int(os.environ.get("BEDTIME_HOUR", 21))
 BEDTIME_MINUTE = int(os.environ.get("BEDTIME_MINUTE", 0))
 WEEKLY_SUMMARY_DAY = int(os.environ.get("WEEKLY_SUMMARY_DAY", 6))  # Sunday=6
 WEEKLY_SUMMARY_HOUR = int(os.environ.get("WEEKLY_SUMMARY_HOUR", 6))
-LEADERBOARD_TOP = int(os.environ.get("LEADERBOARD_TOP", 5))
-BADGE_THRESHOLDS = [3, 7, 21]
+LEADERBOARD_TOP = int(os.environ.get("LEADERBOARD_TOP", 10))
+BADGE_THRESHOLDS = [3, 7, 14, 21, 30, 50, 75, 100]
 # Add this near the top with other globals
 ACTIVE_POLL_CHAT = {}  # Store poll_id -> chat_id mapping
 
@@ -88,7 +88,8 @@ CREATE TABLE IF NOT EXISTS records (
     chat_id BIGINT,
     user_id BIGINT,
     date TEXT,
-    time TEXT
+    time TEXT,
+    source TEXT DEFAULT 'manual'
 );
 
 CREATE INDEX IF NOT EXISTS idx_records_chat_date ON records(chat_id, date);
@@ -129,8 +130,8 @@ async def set_user_fields(conn, chat_id:int, user_id:int, streak=None, last_chec
     vals.extend([chat_id, user_id])
     await conn.execute(f"UPDATE users SET {', '.join(parts)} WHERE chat_id=${idx} AND user_id=${idx+1}", *vals)
 
-async def add_record(conn, chat_id:int, user_id:int, iso_date:str, hhmm:str):
-    await conn.execute("INSERT INTO records(chat_id, user_id, date, time) VALUES ($1,$2,$3,$4)", chat_id, user_id, iso_date, hhmm)
+async def add_record(conn, chat_id:int, user_id:int, iso_date:str, hhmm:str, source:str='manual'):
+    await conn.execute("INSERT INTO records(chat_id, user_id, date, time, source) VALUES ($1,$2,$3,$4,$5)", chat_id, user_id, iso_date, hhmm, source)
 
 async def user_checked_today(conn, chat_id:int, user_id:int, iso_date:str):
     row = await conn.fetchrow("SELECT 1 FROM records WHERE chat_id=$1 AND user_id=$2 AND date=$3 LIMIT 1", chat_id, user_id, iso_date)
@@ -180,14 +181,14 @@ def valid_wakeup(t: time) -> bool:
     return time(4,0) <= t <= time(7,0)
 
 def average_time_str(times: List[str]) -> str:
-    """Calculate average time, filtering out non-time values like 'poll_vote', 'overslept', 'reset'"""
+    """Calculate average time, filtering out non-time values like 'overslept', 'reset'"""
     if not times:
         return "N/A"
     
     valid_times = []
     for t in times:
         # Skip special markers
-        if t in ['poll_vote', 'overslept', 'reset']:
+        if t in ['overslept', 'reset']:
             continue
         try:
             h, m = map(int, t.split(":"))
@@ -203,9 +204,25 @@ def average_time_str(times: List[str]) -> str:
     return f"{avg//60:02d}:{avg%60:02d}"
 
 def badge_for_streak(streak:int) -> Optional[str]:
-    if streak >= BADGE_THRESHOLDS[2]: return "Gold"
-    if streak >= BADGE_THRESHOLDS[1]: return "Silver"
-    if streak >= BADGE_THRESHOLDS[0]: return "Bronze"
+    """
+    Award badges based on streak milestones:
+    3+ days = Bronze
+    7+ days = Silver  
+    14+ days = Gold
+    21+ days = Platinum
+    30+ days = Diamond
+    50+ days = Master
+    75+ days = Grandmaster
+    100+ days = Legend
+    """
+    if streak >= 100: return "Legend"
+    if streak >= 75: return "Grandmaster"
+    if streak >= 50: return "Master"
+    if streak >= 30: return "Diamond"
+    if streak >= 21: return "Platinum"
+    if streak >= 14: return "Gold"
+    if streak >= 7: return "Silver"
+    if streak >= 3: return "Bronze"
     return None
 
 # ------------- Safe send helper -------------
@@ -312,14 +329,15 @@ async def poll_answer_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
     voted_yes = (option_index == 0)
     
     today = datetime.now(TZ).date().isoformat()
+    POLL_DEFAULT_TIME = "06:45"  # Default time for poll "Yes" votes
     
     async with db_pool.acquire() as conn:
         # Ensure user row exists
         await ensure_user_row(conn, chat_id, user_id)
         
-        # Check if user already did MANUAL checkin today (not poll)
+        # Check if user already did MANUAL checkin today
         manual_checkin = await conn.fetchrow(
-            "SELECT 1 FROM records WHERE chat_id=$1 AND user_id=$2 AND date=$3 AND time != 'poll_vote' AND time != 'overslept' LIMIT 1",
+            "SELECT 1 FROM records WHERE chat_id=$1 AND user_id=$2 AND date=$3 AND source='manual' LIMIT 1",
             chat_id, user_id, today
         )
         
@@ -330,7 +348,7 @@ async def poll_answer_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
         
         # Check if already voted in poll today
         poll_vote_exists = await conn.fetchrow(
-            "SELECT 1 FROM records WHERE chat_id=$1 AND user_id=$2 AND date=$3 AND time = 'poll_vote' LIMIT 1",
+            "SELECT 1 FROM records WHERE chat_id=$1 AND user_id=$2 AND date=$3 AND source='poll' LIMIT 1",
             chat_id, user_id, today
         )
         
@@ -346,17 +364,17 @@ async def poll_answer_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
             new_streak = current_streak + 1
             badge = badge_for_streak(new_streak) or ""
             
-            # Update user stats with "poll_vote" marker
+            # Update user stats with default poll time (6:45 AM)
             await set_user_fields(
                 conn, chat_id, user_id,
                 streak=new_streak,
                 last_checkin=today,
-                last_time="poll_vote",
+                last_time=POLL_DEFAULT_TIME,
                 badge=badge
             )
             
-            # Add record with "poll_vote" marker
-            await add_record(conn, chat_id, user_id, today, "poll_vote")
+            # Add record with 6:45 AM time and source='poll'
+            await add_record(conn, chat_id, user_id, today, POLL_DEFAULT_TIME, source='poll')
             
             # Send congratulations message
             try:
@@ -368,8 +386,9 @@ async def poll_answer_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
                     text=(
                         f"🎉 {mention} woke up on time!\n"
                         f"🔥 Streak: <b>{new_streak}</b> days\n"
+                        f"⏰ Time recorded: <b>{POLL_DEFAULT_TIME}</b>\n"
                         f"🏅 Badge: <b>{badge or 'None'}</b>\n\n"
-                        f"💡 <i>You can still use /checkin with your exact wake-up time!</i>"
+                        f"💡 <i>You can still use /checkin to update your exact wake-up time!</i>"
                     ),
                     parse_mode=ParseMode.HTML
                 )
@@ -387,7 +406,7 @@ async def poll_answer_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
             )
             
             # Add oversleep record
-            await add_record(conn, chat_id, user_id, today, "overslept")
+            await add_record(conn, chat_id, user_id, today, "overslept", source='poll')
             
             # Send reset message
             try:
@@ -444,7 +463,7 @@ async def mystats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     avg = average_time_str(recs)
     
     # Get earliest valid time (skip markers)
-    valid_times = [t for t in recs if t not in ['poll_vote', 'overslept', 'reset']]
+    valid_times = [t for t in recs if t not in ['overslept', 'reset']]
     earliest = min(valid_times) if valid_times else "N/A"
     
     await update.message.reply_text(
@@ -507,9 +526,9 @@ async def checkin_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Ensure user row exists
         await ensure_user_row(conn, GROUP_CHAT_ID, user.id)
 
-        # Check if already did MANUAL checkin today (not poll)
+        # Check if already did MANUAL checkin today
         manual_checkin = await conn.fetchrow(
-            "SELECT 1 FROM records WHERE chat_id=$1 AND user_id=$2 AND date=$3 AND time != 'poll_vote' AND time != 'overslept' LIMIT 1",
+            "SELECT 1 FROM records WHERE chat_id=$1 AND user_id=$2 AND date=$3 AND source='manual' LIMIT 1",
             GROUP_CHAT_ID, user.id, today_iso
         )
         
@@ -521,15 +540,18 @@ async def checkin_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-        # Delete any existing poll vote (we're replacing it)
-        await conn.execute(
-            "DELETE FROM records WHERE chat_id=$1 AND user_id=$2 AND date=$3 AND time = 'poll_vote'",
+        # Delete any existing poll vote (we're replacing it with manual checkin)
+        deleted = await conn.execute(
+            "DELETE FROM records WHERE chat_id=$1 AND user_id=$2 AND date=$3 AND source='poll'",
             GROUP_CHAT_ID, user.id, today_iso
         )
+        
+        if deleted and deleted != "DELETE 0":
+            print(f"✅ Replaced poll vote with manual checkin for user {user.id}")
 
         # If outside 4–7 AM → record + reset
         if not valid_wakeup(t):
-            await add_record(conn, GROUP_CHAT_ID, user.id, today_iso, hhmm)
+            await add_record(conn, GROUP_CHAT_ID, user.id, today_iso, hhmm, source='manual')
             await set_user_fields(conn, GROUP_CHAT_ID , user.id,streak=0, last_checkin=today_iso,last_time=hhmm, badge="")
 
             await msg.reply_text(
@@ -546,7 +568,7 @@ async def checkin_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         new_streak = prev_streak + 1
         badge = badge_for_streak(new_streak) or ""
 
-        await add_record(conn, GROUP_CHAT_ID, user.id, today_iso, hhmm)
+        await add_record(conn, GROUP_CHAT_ID, user.id, today_iso, hhmm, source='manual')
         await set_user_fields(conn , GROUP_CHAT_ID, user.id,
                               streak=new_streak,
                               last_checkin=today_iso,
@@ -562,58 +584,121 @@ async def checkin_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ------------- Leaderboards & summaries -------------
 async def send_leaderboard(context: ContextTypes.DEFAULT_TYPE):
+    """
+    Send leaderboard with TOP 10 streaks and TOP 10 earliest wake-up times.
+    """
     try:
+        print("📊 Generating leaderboard...")
+        
+        # Get database connection
         async with db_pool.acquire() as conn:
-            top_streaks = await get_top_streaks(conn, GROUP_CHAT_ID, LEADERBOARD_TOP)
-            recs = await conn.fetch("SELECT user_id, time FROM records WHERE chat_id=$1", GROUP_CHAT_ID)
+            # Get top 10 streaks
+            top_streaks = await conn.fetch(
+                "SELECT user_id, streak, badge FROM users WHERE chat_id=$1 ORDER BY streak DESC LIMIT 10",
+                GROUP_CHAT_ID
+            )
+            
+            # Get all records with valid times
+            all_records = await conn.fetch(
+                "SELECT user_id, time FROM records WHERE chat_id=$1 AND time NOT IN ('overslept', 'reset')",
+                GROUP_CHAT_ID
+            )
         
-        # earliest risers by average (filter out special markers)
-        times_by_user = defaultdict(list)
-        for r in recs:
-            # Skip special markers
-            if r['time'] in ['poll_vote', 'overslept', 'reset']:
-                continue
-            try:
-                # Validate it's a proper time format
-                h, m = map(int, r['time'].split(":"))
-                if 0 <= h <= 23 and 0 <= m <= 59:
-                    times_by_user[r['user_id']].append(r['time'])
-            except:
-                continue
+        print(f"✅ Found {len(top_streaks)} users with streaks")
+        print(f"✅ Found {len(all_records)} valid time records")
         
-        avg_times = {}
-        for uid, times in times_by_user.items():
-            if times:
-                mins = [int(h)*60 + int(m) for h,m in (map(int, x.split(":")) for x in times)]
-                avg_times[uid] = sum(mins)//len(mins)
-        
-        earliest = sorted(avg_times.items(), key=lambda x: x[1])[:LEADERBOARD_TOP]
-
-        # format
+        # === TOP STREAKS SECTION ===
         streak_lines = []
-        for i, (uid, streak, badge) in enumerate(top_streaks, 1):
+        if top_streaks:
+            for i, row in enumerate(top_streaks, 1):
+                uid = row['user_id']
+                streak = row['streak']
+                badge = row['badge'] or ""
+                
+                try:
+                    member = await context.bot.get_chat_member(GROUP_CHAT_ID, uid)
+                    name = member.user.mention_html()
+                except Exception as e:
+                    print(f"⚠️ Could not fetch user {uid}: {e}")
+                    name = f"User {uid}"
+                
+                badge_text = f" 🏅 {badge}" if badge else ""
+                streak_lines.append(f"{i}. {name} — <b>{streak}</b> days{badge_text}")
+        
+        streak_section = "🏆 <b>TOP 10 STREAKS</b>\n\n" + (
+            "\n".join(streak_lines) if streak_lines else "No streaks yet. Start checking in!"
+        )
+        
+        # === EARLIEST RISERS SECTION ===
+        # Calculate average wake-up time per user
+        user_times = defaultdict(list)
+        
+        for record in all_records:
+            uid = record['user_id']
+            time_str = record['time']
+            
             try:
-                mention = (await context.bot.get_chat_member(GROUP_CHAT_ID, uid)).user.mention_html()
-            except:
-                mention = str(uid)
-            b = f" ({badge})" if badge else ""
-            streak_lines.append(f"{i}. {mention} — <b>{streak}</b> days{b}")
-        streak_text = "🏆 <b>Top Streaks</b>\n\n" + ("\n".join(streak_lines) if streak_lines else "No streaks yet.")
-
+                # Parse time and convert to minutes
+                h, m = map(int, time_str.split(":"))
+                if 0 <= h <= 23 and 0 <= m <= 59:
+                    minutes = h * 60 + m
+                    user_times[uid].append(minutes)
+            except Exception as e:
+                print(f"⚠️ Skipping invalid time '{time_str}': {e}")
+                continue
+        
+        # Calculate averages
+        user_averages = []
+        for uid, times in user_times.items():
+            if times:
+                avg_minutes = sum(times) // len(times)
+                user_averages.append((uid, avg_minutes))
+        
+        # Sort by earliest (lowest minutes) and take top 10
+        user_averages.sort(key=lambda x: x[1])
+        top_10_earliest = user_averages[:10]
+        
         early_lines = []
-        for i, (uid, mins) in enumerate(earliest, 1):
-            try:
-                mention = (await context.bot.get_chat_member(GROUP_CHAT_ID, uid)).user.mention_html()
-            except:
-                mention = str(uid)
-            h,m = divmod(mins, 60)
-            early_lines.append(f"{i}. {mention} — ⏰ <b>{h:02d}:{m:02d}</b>")
-        early_text = "🌅 <b>Earliest Risers (avg)</b>\n\n" + ("\n".join(early_lines) if early_lines else "No wake-up data yet.")
-
-        await safe_send(context.bot, GROUP_CHAT_ID, f"{streak_text}\n\n{early_text}", parse_mode=ParseMode.HTML)
+        if top_10_earliest:
+            for i, (uid, avg_mins) in enumerate(top_10_earliest, 1):
+                try:
+                    member = await context.bot.get_chat_member(GROUP_CHAT_ID, uid)
+                    name = member.user.mention_html()
+                except Exception as e:
+                    print(f"⚠️ Could not fetch user {uid}: {e}")
+                    name = f"User {uid}"
+                
+                h, m = divmod(avg_mins, 60)
+                time_display = f"{h:02d}:{m:02d}"
+                early_lines.append(f"{i}. {name} — ⏰ <b>{time_display}</b>")
+        
+        early_section = "🌅 <b>TOP 10 EARLIEST RISERS</b> (avg)\n\n" + (
+            "\n".join(early_lines) if early_lines else "No wake-up data yet."
+        )
+        
+        # === SEND MESSAGE ===
+        final_message = f"{streak_section}\n\n{early_section}"
+        
+        await context.bot.send_message(
+            chat_id=GROUP_CHAT_ID,
+            text=final_message,
+            parse_mode=ParseMode.HTML
+        )
+        
+        print("✅ Leaderboard sent successfully!")
+        
     except Exception as e:
-        print(f"❌ Error in send_leaderboard: {e}")
-        await safe_send(context.bot, GROUP_CHAT_ID, "⚠️ Error generating leaderboard. Please try again later.")
+        print(f"❌ LEADERBOARD ERROR: {type(e).__name__}: {e}")
+        import traceback
+        traceback.print_exc()
+        
+        try:
+            await context.bot.send_message(
+                chat_id=GROUP_CHAT_ID,
+                text="⚠️ Error generating leaderboard. Please try again later."
+            )
+        except:
+            print("❌ Could not send error message to chat")
 
 async def send_bedtime_reminder(context: ContextTypes.DEFAULT_TYPE):
     chat_id = GROUP_CHAT_ID  # Use the global GROUP_CHAT_ID
@@ -711,7 +796,7 @@ async def main():
     app.add_handler(CommandHandler("reset", reset_cmd))
     app.add_handler(CommandHandler("setstreak", setstreak_cmd))
     app.add_handler(CommandHandler("mystats", mystats_cmd))
-    app.add_handler(CommandHandler("leaderboard", send_leaderboard))
+    app.add_handler(CommandHandler("leaderboard", lambda u, c: send_leaderboard(c)))
     app.add_handler(CommandHandler("checkin", checkin_handler))
     # Also accept plain "checkin" without slash (privacy may block plain messages unless disabled)
     app.add_handler(MessageHandler(filters.Regex(r'(?i)^checkin($|\s+)'), checkin_handler))
