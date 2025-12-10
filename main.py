@@ -512,6 +512,7 @@ async def mystats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode=ParseMode.HTML
     )
 
+
 # Checkin supports both /checkin and plain "checkin"
 async def checkin_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
@@ -579,6 +580,12 @@ async def checkin_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
                 return
 
+            # Check if poll vote exists BEFORE deleting (we need this info later)
+            poll_today = await conn.fetchrow(
+                "SELECT 1 FROM records WHERE chat_id=$1 AND user_id=$2 AND date=$3 AND source='poll' LIMIT 1",
+                GROUP_CHAT_ID, user.id, today_iso
+            )
+
             # Delete any existing poll vote (we're replacing it with manual checkin)
             deleted = await conn.execute(
                 "DELETE FROM records WHERE chat_id=$1 AND user_id=$2 AND date=$3 AND source='poll'",
@@ -605,10 +612,15 @@ async def checkin_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             row = await get_user(conn, GROUP_CHAT_ID, user.id)
             prev_streak = row['streak'] if row else 0
 
-            new_streak = prev_streak + 1
-            badge = badge_for_streak(new_streak) or ""
+            # If replacing poll vote, maintain streak. Otherwise increment.
+            if poll_today:
+                new_streak = prev_streak
+                print(f"ℹ️ Replacing poll vote - maintaining streak at {new_streak}")
+            else:
+                new_streak = prev_streak + 1
+                print(f"✅ New manual checkin - streak increased to {new_streak}")
 
-            print(f"✅ Valid checkin: user={user.id}, new_streak={new_streak}, badge={badge}")
+            badge = badge_for_streak(new_streak) or ""
 
             await add_record(conn, GROUP_CHAT_ID, user.id, today_iso, hhmm, source='manual')
             await set_user_fields(conn , GROUP_CHAT_ID, user.id,
@@ -631,7 +643,6 @@ async def checkin_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await msg.reply_text("⚠️ An error occurred during check-in. Please try again.")
         except:
             pass
-
 
 # ------------- Leaderboards & summaries -------------
 async def send_leaderboard(context: ContextTypes.DEFAULT_TYPE):
