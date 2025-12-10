@@ -95,12 +95,36 @@ CREATE TABLE IF NOT EXISTS records (
 CREATE INDEX IF NOT EXISTS idx_records_chat_date ON records(chat_id, date);
 """
 
+MIGRATION_SQL = """
+-- Add source column if it doesn't exist
+DO $ 
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns 
+        WHERE table_name='records' AND column_name='source'
+    ) THEN
+        ALTER TABLE records ADD COLUMN source TEXT DEFAULT 'manual';
+        UPDATE records SET source = 'manual' WHERE source IS NULL;
+        RAISE NOTICE 'Added source column to records table';
+    END IF;
+END $;
+"""
+
 async def init_db():
     global db_pool
     print("🔄 Connecting to DB...")
     db_pool = await asyncpg.create_pool(DATABASE_URL, min_size=1, max_size=5)
     async with db_pool.acquire() as conn:
         await conn.execute(CREATE_TABLES_SQL)
+        print("✅ Tables created/verified")
+        
+        # Run migration
+        try:
+            await conn.execute(MIGRATION_SQL)
+            print("✅ Migration completed - source column added")
+        except Exception as e:
+            print(f"⚠️ Migration note: {e}")
+    
     print("✅ DB ready")
 
 # DB helpers
@@ -428,6 +452,8 @@ async def reset_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     async with db_pool.acquire() as conn:
         await ensure_user_row(conn, GROUP_CHAT_ID, user.id)
         await set_user_fields(conn, GROUP_CHAT_ID, user.id, streak=0, last_checkin=date.today().isoformat(), last_time="reset", badge="")
+        # Also add a record
+        await add_record(conn, GROUP_CHAT_ID, user.id, date.today().isoformat(), "reset", source='manual')
     await update.message.reply_text(f"🔁 {user.mention_html()} — streak reset to 0.", parse_mode=ParseMode.HTML)
 
 async def setstreak_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -480,106 +506,123 @@ async def mystats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # Checkin supports both /checkin and plain "checkin"
 async def checkin_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = update.effective_message
-    if msg.chat.id != GROUP_CHAT_ID:
-        return
+    try:
+        msg = update.effective_message
+        if msg.chat.id != GROUP_CHAT_ID:
+            return
 
-    user = update.effective_user
-    parts = msg.text.strip().split()
+        user = update.effective_user
+        parts = msg.text.strip().split()
 
-    # Must include time argument
-    if len(parts) < 2:
-        await msg.reply_text(
-            "❗ <b>Invalid format</b>\n\n"
-            "Use:\n"
-            "👉 <code>/checkin 5</code>\n"
-            "👉 <code>/checkin 5.30</code>\n"
-            "👉 <code>/checkin 5:30</code>\n\n"
-            "⏰ <b>IMPORTANT:</b>\n"
-            "• Streak is counted only if wake-up time is between <b>4:00 AM and 7:00 AM</b>.\n"
-            "• You can check in only <b>once per day</b>.",
-            parse_mode=ParseMode.HTML
-        )
-        return
-
-    # Parse time (supports 5, 5.30, 5:30 etc.)
-    raw_time = parts[1]
-    t = parse_time_string(raw_time)
-
-    if not t:
-        await msg.reply_text(
-            "❗ <b>Invalid time format</b>\n\n"
-            "Use:\n"
-            "👉 <code>/checkin 5</code>\n"
-            "👉 <code>/checkin 5.30</code>\n"
-            "👉 <code>/checkin 5:30</code>\n\n"
-            "⏰ <b>Streak only counts between 4 AM and 7 AM</b>.",
-            parse_mode=ParseMode.HTML
-        )
-        return
-
-    today_iso = datetime.now(TZ).date().isoformat()
-    hhmm = t.strftime("%H:%M")
-
-    async with db_pool.acquire() as conn:
-
-        # Ensure user row exists
-        await ensure_user_row(conn, GROUP_CHAT_ID, user.id)
-
-        # Check if already did MANUAL checkin today
-        manual_checkin = await conn.fetchrow(
-            "SELECT 1 FROM records WHERE chat_id=$1 AND user_id=$2 AND date=$3 AND source='manual' LIMIT 1",
-            GROUP_CHAT_ID, user.id, today_iso
-        )
-        
-        if manual_checkin:
+        # Must include time argument
+        if len(parts) < 2:
             await msg.reply_text(
-                f"⛔ {user.mention_html()} you have already used your manual check-in for today.\n"
-                "You can check in only <b>once per day</b>.",
+                "❗ <b>Invalid format</b>\n\n"
+                "Use:\n"
+                "👉 <code>/checkin 5</code>\n"
+                "👉 <code>/checkin 5.30</code>\n"
+                "👉 <code>/checkin 5:30</code>\n\n"
+                "⏰ <b>IMPORTANT:</b>\n"
+                "• Streak is counted only if wake-up time is between <b>4:00 AM and 7:00 AM</b>.\n"
+                "• You can check in only <b>once per day</b>.",
                 parse_mode=ParseMode.HTML
             )
             return
 
-        # Delete any existing poll vote (we're replacing it with manual checkin)
-        deleted = await conn.execute(
-            "DELETE FROM records WHERE chat_id=$1 AND user_id=$2 AND date=$3 AND source='poll'",
-            GROUP_CHAT_ID, user.id, today_iso
-        )
-        
-        if deleted and deleted != "DELETE 0":
-            print(f"✅ Replaced poll vote with manual checkin for user {user.id}")
+        # Parse time (supports 5, 5.30, 5:30 etc.)
+        raw_time = parts[1]
+        t = parse_time_string(raw_time)
 
-        # If outside 4–7 AM → record + reset
-        if not valid_wakeup(t):
+        if not t:
+            await msg.reply_text(
+                "❗ <b>Invalid time format</b>\n\n"
+                "Use:\n"
+                "👉 <code>/checkin 5</code>\n"
+                "👉 <code>/checkin 5.30</code>\n"
+                "👉 <code>/checkin 5:30</code>\n\n"
+                "⏰ <b>Streak only counts between 4 AM and 7 AM</b>.",
+                parse_mode=ParseMode.HTML
+            )
+            return
+
+        today_iso = datetime.now(TZ).date().isoformat()
+        hhmm = t.strftime("%H:%M")
+        
+        print(f"📝 Checkin attempt: user={user.id}, time={hhmm}, date={today_iso}")
+
+        async with db_pool.acquire() as conn:
+
+            # Ensure user row exists
+            await ensure_user_row(conn, GROUP_CHAT_ID, user.id)
+            print(f"✅ User row ensured for {user.id}")
+
+            # Check if already did MANUAL checkin today
+            manual_checkin = await conn.fetchrow(
+                "SELECT 1 FROM records WHERE chat_id=$1 AND user_id=$2 AND date=$3 AND source='manual' LIMIT 1",
+                GROUP_CHAT_ID, user.id, today_iso
+            )
+            
+            if manual_checkin:
+                print(f"⚠️ User {user.id} already did manual checkin today")
+                await msg.reply_text(
+                    f"⛔ {user.mention_html()} you have already used your manual check-in for today.\n"
+                    "You can check in only <b>once per day</b>.",
+                    parse_mode=ParseMode.HTML
+                )
+                return
+
+            # Delete any existing poll vote (we're replacing it with manual checkin)
+            deleted = await conn.execute(
+                "DELETE FROM records WHERE chat_id=$1 AND user_id=$2 AND date=$3 AND source='poll'",
+                GROUP_CHAT_ID, user.id, today_iso
+            )
+            
+            if deleted and "DELETE 0" not in str(deleted):
+                print(f"✅ Deleted poll vote for user {user.id}")
+
+            # If outside 4–7 AM → record + reset
+            if not valid_wakeup(t):
+                print(f"⚠️ Invalid wakeup time {hhmm} for user {user.id}")
+                await add_record(conn, GROUP_CHAT_ID, user.id, today_iso, hhmm, source='manual')
+                await set_user_fields(conn, GROUP_CHAT_ID , user.id,streak=0, last_checkin=today_iso,last_time=hhmm, badge="")
+
+                await msg.reply_text(
+                    f"⚠️ {user.mention_html()} — wake-up <b>{hhmm}</b> is outside 04:00–07:00.\n"
+                    "Your streak has been <b>reset to 0</b>.",
+                    parse_mode=ParseMode.HTML
+                )
+                return
+
+            # Valid check-in
+            row = await get_user(conn, GROUP_CHAT_ID, user.id)
+            prev_streak = row['streak'] if row else 0
+
+            new_streak = prev_streak + 1
+            badge = badge_for_streak(new_streak) or ""
+
+            print(f"✅ Valid checkin: user={user.id}, new_streak={new_streak}, badge={badge}")
+
             await add_record(conn, GROUP_CHAT_ID, user.id, today_iso, hhmm, source='manual')
-            await set_user_fields(conn, GROUP_CHAT_ID , user.id,streak=0, last_checkin=today_iso,last_time=hhmm, badge="")
-
+            await set_user_fields(conn , GROUP_CHAT_ID, user.id,
+                                  streak=new_streak,
+                                  last_checkin=today_iso,
+                                  last_time=hhmm,
+                                  badge=badge)
             await msg.reply_text(
-                f"⚠️ {user.mention_html()} — wake-up <b>{hhmm}</b> is outside 04:00–07:00.\n"
-                "Your streak has been <b>reset to 0</b>.",
+                f"🔥 {user.mention_html()} — streak now <b>{new_streak}</b>\n"
+                f"⏰ Wake-up time: <b>{hhmm}</b>\n"
+                f"🏅 Badge: <b>{badge or 'None'}</b>",
                 parse_mode=ParseMode.HTML
             )
-            return
-
-        # Valid check-in
-        row = await get_user(conn, GROUP_CHAT_ID, user.id)
-        prev_streak = row['streak'] if row else 0
-
-        new_streak = prev_streak + 1
-        badge = badge_for_streak(new_streak) or ""
-
-        await add_record(conn, GROUP_CHAT_ID, user.id, today_iso, hhmm, source='manual')
-        await set_user_fields(conn , GROUP_CHAT_ID, user.id,
-                              streak=new_streak,
-                              last_checkin=today_iso,
-                              last_time=hhmm,
-                              badge=badge)
-        await msg.reply_text(
-            f"🔥 {user.mention_html()} — streak now <b>{new_streak}</b>\n"
-            f"⏰ Wake-up time: <b>{hhmm}</b>\n"
-            f"🏅 Badge: <b>{badge or 'None'}</b>",
-            parse_mode=ParseMode.HTML
-        )
+            print(f"✅ Checkin complete for user {user.id}")
+    except Exception as e:
+        print(f"❌ CHECKIN ERROR: {type(e).__name__}: {e}")
+        import traceback
+        traceback.print_exc()
+        try:
+            await msg.reply_text("⚠️ An error occurred during check-in. Please try again.")
+        except:
+            pass
 
 
 # ------------- Leaderboards & summaries -------------
