@@ -115,15 +115,23 @@ async def init_db():
     print("🔄 Connecting to DB...")
     db_pool = await asyncpg.create_pool(DATABASE_URL, min_size=1, max_size=5)
     async with db_pool.acquire() as conn:
+        # Create tables first
         await conn.execute(CREATE_TABLES_SQL)
         print("✅ Tables created/verified")
         
-        # Run migration
-        try:
-            await conn.execute(MIGRATION_SQL)
-            print("✅ Migration completed - source column added")
-        except Exception as e:
-            print(f"⚠️ Migration note: {e}")
+        # Check if source column exists
+        check_column = await conn.fetchval(
+            """SELECT COUNT(*) FROM information_schema.columns 
+               WHERE table_name='records' AND column_name='source'"""
+        )
+        
+        if check_column == 0:
+            print("⚠️ Source column missing - adding it now...")
+            await conn.execute("ALTER TABLE records ADD COLUMN source TEXT DEFAULT 'manual'")
+            await conn.execute("UPDATE records SET source = 'manual' WHERE source IS NULL OR source = ''")
+            print("✅ Migration completed - source column added and populated")
+        else:
+            print("✅ Source column already exists - no migration needed")
     
     print("✅ DB ready")
 
@@ -856,7 +864,7 @@ async def main():
             jq.run_daily(send_leaderboard, time=time(LEADERBOARD_HOUR,0,tzinfo=TZ), chat_id=GROUP_CHAT_ID, name="daily_leaderboard")
             jq.run_daily(send_bedtime_reminder, time=time(BEDTIME_HOUR, BEDTIME_MINUTE,tzinfo=TZ), chat_id=GROUP_CHAT_ID, name="bedtime_reminder")
             jq.run_daily(send_weekly_summary, time=time(WEEKLY_SUMMARY_HOUR,0,tzinfo=TZ), chat_id=GROUP_CHAT_ID, name="weekly_summary")
-            jq.run_daily(send_wakeup_poll, time=time(9,3, tzinfo=TZ), chat_id=GROUP_CHAT_ID, name="wakeup_poll")
+            jq.run_daily(send_wakeup_poll, time=time(5,0, tzinfo=TZ), chat_id=GROUP_CHAT_ID, name="wakeup_poll")
             jq.run_repeating(send_motivation, interval=9000, first=0, chat_id=GROUP_CHAT_ID, name="hourly_motivation")
             print("✅ JobQueue scheduled tasks registered.")
         except Exception as e:
@@ -869,7 +877,7 @@ async def main():
         asyncio.create_task(fallback_daily_runner(send_leaderboard, LEADERBOARD_HOUR, 0, ctx=None))
         asyncio.create_task(fallback_daily_runner(send_bedtime_reminder, BEDTIME_HOUR,  BEDTIME_MINUTE, ctx=None))
         asyncio.create_task(fallback_daily_runner(send_weekly_summary, WEEKLY_SUMMARY_HOUR, 0, ctx=None))
-        asyncio.create_task(fallback_daily_runner(send_wakeup_poll, 9 ,3, ctx=None))
+        asyncio.create_task(fallback_daily_runner(send_wakeup_poll, 5 ,0, ctx=None))
         asyncio.create_task(fallback_hourly_runner(send_motivation))
         if RENDER_EXTERNAL_URL: asyncio.create_task(self_ping_task())
         print("ℹ️ Fallback scheduler running for daily jobs.")
