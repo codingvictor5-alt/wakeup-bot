@@ -875,7 +875,7 @@ async def main():
             jq.run_daily(send_leaderboard, time=time(LEADERBOARD_HOUR,0,tzinfo=TZ), chat_id=GROUP_CHAT_ID, name="daily_leaderboard")
             jq.run_daily(send_bedtime_reminder, time=time(BEDTIME_HOUR, BEDTIME_MINUTE,tzinfo=TZ), chat_id=GROUP_CHAT_ID, name="bedtime_reminder")
             jq.run_daily(send_weekly_summary, time=time(WEEKLY_SUMMARY_HOUR,0,tzinfo=TZ), chat_id=GROUP_CHAT_ID, name="weekly_summary")
-            jq.run_daily(send_wakeup_poll, time=time(18,41, tzinfo=TZ), chat_id=GROUP_CHAT_ID, name="wakeup_poll")
+            jq.run_daily(send_wakeup_poll, time=time(5,0, tzinfo=TZ), chat_id=GROUP_CHAT_ID, name="wakeup_poll")
             jq.run_repeating(send_motivation, interval=9000, first=0, chat_id=GROUP_CHAT_ID, name="hourly_motivation")
             print("✅ JobQueue scheduled tasks registered.")
         except Exception as e:
@@ -888,7 +888,7 @@ async def main():
         asyncio.create_task(fallback_daily_runner(send_leaderboard, LEADERBOARD_HOUR, 0, ctx=None))
         asyncio.create_task(fallback_daily_runner(send_bedtime_reminder, BEDTIME_HOUR,  BEDTIME_MINUTE, ctx=None))
         asyncio.create_task(fallback_daily_runner(send_weekly_summary, WEEKLY_SUMMARY_HOUR, 0, ctx=None))
-        asyncio.create_task(fallback_daily_runner(send_wakeup_poll, 18 ,41, ctx=None))
+        asyncio.create_task(fallback_daily_runner(send_wakeup_poll, 5 ,0, ctx=None))
         asyncio.create_task(fallback_hourly_runner(send_motivation))
         if RENDER_EXTERNAL_URL: asyncio.create_task(self_ping_task())
         print("ℹ️ Fallback scheduler running for daily jobs.")
